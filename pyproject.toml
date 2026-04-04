@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "finance-stack"
+version = "0.1.0"
+description = "MCP-native paper trading stack with dashboard"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=1.2.0",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.6.0",
+    "httpx>=0.27.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "httpx>=0.27.0",
+    "ruff>=0.8.0",
+]
+
+[tool.setuptools]
+packages = ["finance_core"]
+
+[tool.setuptools.package-dir]
+finance_core = "packages/core/finance_core"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["packages/core"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+"servers/*.py" = ["E402"]
+"scripts/*.py" = ["E402"]

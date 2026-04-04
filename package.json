@@ -1,0 +1,9 @@
+{
+  "name": "finance-stack",
+  "private": true,
+  "scripts": {
+    "dev": "npm run dev --prefix web",
+    "build:web": "npm run build --prefix web",
+    "install:web": "npm install --prefix web"
+  }
+}

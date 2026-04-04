@@ -1,0 +1,24 @@
+{
+  "name": "deposit_then_buy_aapl",
+  "quotes": { "AAPL": 180.0 },
+  "policy": {
+    "version": "eval-1",
+    "max_shares_per_symbol": 10000,
+    "max_order_notional": 100000
+  },
+  "steps": [
+    { "action": "deposit", "amount": 50000 },
+    {
+      "action": "place_order",
+      "client_order_id": "eval-1",
+      "symbol": "AAPL",
+      "side": "BUY",
+      "quantity": 10
+    },
+    {
+      "action": "expect",
+      "cash": 48200,
+      "positions": { "AAPL": 10 }
+    }
+  ]
+}
