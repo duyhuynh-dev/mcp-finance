@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "finance-market": {
+      "command": "python3.11",
+      "args": ["/ABSOLUTE/PATH/TO/ai-project/servers/market_mcp.py"],
+      "env": {
+        "FINANCE_QUOTE_BACKEND": "mock"
+      }
+    },
+    "finance-portfolio": {
+      "command": "python3.11",
+      "args": ["/ABSOLUTE/PATH/TO/ai-project/servers/portfolio_mcp.py"],
+      "env": {
+        "FINANCE_DB_PATH": "/ABSOLUTE/PATH/TO/ai-project/data/finance.db",
+        "FINANCE_QUOTE_BACKEND": "mock"
+      }
+    }
+  }
+}

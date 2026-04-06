@@ -1,0 +1,26 @@
+{
+  "name": "fee_and_slippage_buy",
+  "quotes": { "ZZZ": 100.0 },
+  "policy": {
+    "version": "eval-fs",
+    "max_shares_per_symbol": 10000,
+    "max_order_notional": 100000,
+    "fee_bps": 100,
+    "slippage_bps": 50
+  },
+  "steps": [
+    { "action": "deposit", "amount": 50000 },
+    {
+      "action": "place_order",
+      "client_order_id": "fs1",
+      "symbol": "ZZZ",
+      "side": "BUY",
+      "quantity": 10
+    },
+    {
+      "action": "expect",
+      "cash": 48984.95,
+      "positions": { "ZZZ": 10 }
+    }
+  ]
+}

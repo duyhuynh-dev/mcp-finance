@@ -1,0 +1,25 @@
+version: "3.9"
+
+services:
+  app:
+    build: .
+    ports:
+      - "${PORT:-8000}:8000"
+    volumes:
+      - finance-data:/app/data
+    environment:
+      - FINANCE_DB_PATH=/app/data/finance.db
+      - FINANCE_QUOTE_BACKEND=${FINANCE_QUOTE_BACKEND:-mock}
+      - QUOTE_CACHE_TTL=${QUOTE_CACHE_TTL:-30}
+      - REQUIRE_AUTH=${REQUIRE_AUTH:-false}
+      - CORS_ORIGINS=${CORS_ORIGINS:-*}
+      - PORT=8000
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+
+volumes:
+  finance-data:

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from finance_core.types import utc_now
@@ -83,5 +84,38 @@ class YahooChartQuoteProvider(QuoteProvider):
             raise ValueError(f"Bad quote payload for {sym}") from e
         return Quote(symbol=sym, price=price, as_of=utc_now())
 
+    _POPULAR = [
+        "AAPL", "AMZN", "GOOGL", "META", "MSFT",
+        "NVDA", "SPY", "TSLA", "QQQ", "AMD",
+    ]
+
     def list_symbols(self) -> list[str]:
-        return []
+        return list(self._POPULAR)
+
+
+@dataclass
+class CachedQuoteProvider(QuoteProvider):
+    """Wraps any provider with a TTL cache to reduce API calls."""
+
+    _inner: QuoteProvider
+    _ttl: float = 30.0
+    _cache: dict[str, tuple[Quote, float]] = field(default_factory=dict)
+
+    def get_quote(self, symbol: str) -> Quote:
+        sym = symbol.upper()
+        now = time.monotonic()
+        cached = self._cache.get(sym)
+        if cached and (now - cached[1]) < self._ttl:
+            return cached[0]
+        q = self._inner.get_quote(sym)
+        self._cache[sym] = (q, now)
+        return q
+
+    def list_symbols(self) -> list[str]:
+        return self._inner.list_symbols()
+
+    def cache_stats(self) -> dict[str, int]:
+        return {
+            "cached_symbols": len(self._cache),
+            "ttl_seconds": int(self._ttl),
+        }

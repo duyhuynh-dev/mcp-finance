@@ -23,6 +23,7 @@ class OrderKind(StrEnum):
 class OrderStatus(StrEnum):
     PENDING = "PENDING"
     FILLED = "FILLED"
+    PARTIAL = "PARTIAL"
     REJECTED = "REJECTED"
     CANCELLED = "CANCELLED"
 
@@ -39,6 +40,8 @@ class RejectionReason(StrEnum):
     INVALID_LIMIT_PRICE = "INVALID_LIMIT_PRICE"
     ORDER_NOT_FOUND = "ORDER_NOT_FOUND"
     NOT_PENDING_CANCEL = "NOT_PENDING_CANCEL"
+    MAX_DAILY_ORDERS = "MAX_DAILY_ORDERS"
+    MAX_CONCENTRATION = "MAX_CONCENTRATION"
 
 
 @dataclass
@@ -65,13 +68,17 @@ class FillRecord:
     price: float
     filled_at: datetime
     fee: float = 0.0
+    realized_pnl: float = 0.0
 
 
 @dataclass
 class Position:
     symbol: str
     quantity: float
-    avg_cost: float | None = None
+    avg_cost: float = 0.0
+    mark_price: float = 0.0
+    market_value: float = 0.0
+    unrealized_pnl: float = 0.0
 
 
 @dataclass
@@ -80,6 +87,8 @@ class PortfolioState:
     trading_enabled: bool
     positions: dict[str, Position] = field(default_factory=dict)
     rules_version: str = "1"
+    total_realized_pnl: float = 0.0
+    total_unrealized_pnl: float = 0.0
 
 
 @dataclass
@@ -89,6 +98,8 @@ class PlaceOrderResult:
     status: OrderStatus
     rejection_reason: RejectionReason | None = None
     fill_price: float | None = None
+    filled_quantity: float | None = None
+    remaining_quantity: float | None = None
     message: str = ""
 
     def to_audit_dict(self) -> dict[str, Any]:
@@ -98,5 +109,7 @@ class PlaceOrderResult:
             "status": self.status.value,
             "rejection_reason": self.rejection_reason.value if self.rejection_reason else None,
             "fill_price": self.fill_price,
+            "filled_quantity": self.filled_quantity,
+            "remaining_quantity": self.remaining_quantity,
             "message": self.message,
         }

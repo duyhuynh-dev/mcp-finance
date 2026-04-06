@@ -6,7 +6,6 @@ from __future__ import annotations
 import os
 import sys
 
-# Allow running without install: repo root on path
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _ROOT not in sys.path:
     sys.path.insert(0, os.path.join(_ROOT, "packages", "core"))
@@ -21,7 +20,7 @@ _quotes = create_quote_provider()
 
 @mcp.tool()
 def get_quote(symbol: str) -> dict:
-    """Return last price and timestamp for a symbol in the mock universe."""
+    """Return last price and timestamp for a symbol."""
     q = _quotes.get_quote(symbol.strip())
     return {
         "symbol": q.symbol,
@@ -32,7 +31,7 @@ def get_quote(symbol: str) -> dict:
 
 @mcp.tool()
 def list_symbols() -> list[str]:
-    """List symbols available in the mock market."""
+    """List symbols available in the market universe."""
     return _quotes.list_symbols()
 
 

@@ -1,0 +1,33 @@
+{
+  "name": "limit_fill_cross",
+  "quotes": { "AAPL": 180.0 },
+  "policy": {
+    "version": "eval-lim",
+    "max_shares_per_symbol": 10000,
+    "max_order_notional": 100000
+  },
+  "steps": [
+    { "action": "deposit", "amount": 50000 },
+    {
+      "action": "place_order",
+      "client_order_id": "lim-buy-1",
+      "symbol": "AAPL",
+      "side": "BUY",
+      "quantity": 10,
+      "order_kind": "LIMIT",
+      "limit_price": 170.0
+    },
+    {
+      "action": "expect",
+      "cash": 50000,
+      "positions": {}
+    },
+    { "action": "set_price", "symbol": "AAPL", "price": 165.0 },
+    { "action": "tick_limits" },
+    {
+      "action": "expect",
+      "cash": 48350,
+      "positions": { "AAPL": 10 }
+    }
+  ]
+}

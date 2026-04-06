@@ -75,7 +75,11 @@ Use the same `FINANCE_DB_PATH` as the API. Optional: `FINANCE_QUOTE_BACKEND=yaho
 }
 ```
 
-**Tools:** `get_quote`, `list_symbols` · `get_state`, `place_order` (optional `order_kind` MARKET/LIMIT, `limit_price`), `cancel_order`, `list_recent_orders`, `list_recent_fills`.
+**Tools:** `get_quote`, `list_symbols` · `get_state`, `place_order` (optional `order_kind` MARKET/LIMIT, `limit_price`), `cancel_order`, `list_recent_orders`, `list_recent_fills`, `get_risk_metrics`, agents + backtest helpers.
+
+**Quant / ML (same DB as the API):** `list_quant_strategies`, `set_quant_strategy_active`, `run_quant_strategies_once`, `list_quant_signals`, `start_quant_engine`, `stop_quant_engine`, `get_quant_engine_status`, `finance_stack_health`, `get_ml_alpha_diagnostics`, `get_strategy_diagnostics` (holdout Brier / accuracy / ROC-AUC in diagnostics when `ml_alpha` has trained).
+
+See `IMPLEMENTATION_PLAN.md` for execution, risk, and governance follow-ups.
 
 ## Scripted demo (no LLM)
 
@@ -90,6 +94,8 @@ python3.11 scripts/demo_scenario.py
 python3.11 -m pytest tests/ -v
 ruff check api packages/core servers scripts tests
 ```
+
+`GET /api/health` checks SQLite (`SELECT 1`) and reports whether the strategy engine thread is running; returns **503** if the database check fails. CI runs the full suite (including MCP import smoke and `ml_alpha` holdout metrics tests).
 
 GitHub Actions (`.github/workflows/ci.yml`): **ruff**, **pytest** (`FINANCE_QUOTE_BACKEND=mock`), **web build**.
 

@@ -11,5 +11,7 @@ data/*.db
 node_modules/
 web/dist/
 .DS_Store
+# Local Cursor MCP (paths differ per machine; copy .cursor/mcp.json.example)
+.cursor/mcp.json
 .coverage
 htmlcov/
