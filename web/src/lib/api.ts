@@ -16,6 +16,7 @@ import type {
   BrokerStatusData,
   EquityPoint,
   ExecutionPlanData,
+  ExecutionQualityData,
   Fill,
   MetricsData,
   Order,
@@ -541,12 +542,22 @@ export function useCreateExecutionPlan() {
   })
 }
 
+export function useExecutionQuality(limitOrders = 500) {
+  return useQuery({
+    queryKey: ['execution-quality', limitOrders],
+    queryFn: () =>
+      request<ExecutionQualityData>(`/api/execution/quality?limit_orders=${limitOrders}`),
+    staleTime: 5_000,
+  })
+}
+
 const LIVE_KEYS = [
   'portfolio', 'orders', 'fills', 'equity', 'audit', 'risk',
   'agents', 'event-timeline', 'alert-notifications', 'backtest-history',
   'strategies', 'strategy-signals', 'broker-status',
   'broker-reconciliation', 'order-intents-pending', 'risk-snapshot',
   'sim-scenarios',
+  'execution-quality',
 ]
 
 export function useWebSocket() {

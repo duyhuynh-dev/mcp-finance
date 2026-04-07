@@ -253,6 +253,23 @@ def test_fills_endpoint(client: TestClient):
     assert "realized_pnl" in f
 
 
+def test_execution_quality_endpoint(client: TestClient):
+    client.post("/api/deposit", json={"amount": 50_000.0})
+    client.post(
+        "/api/place-order",
+        json={"client_order_id": "eq1", "symbol": "AAPL", "side": "BUY", "quantity": 5},
+    )
+    client.post(
+        "/api/place-order",
+        json={"client_order_id": "eq2", "symbol": "AAPL", "side": "SELL", "quantity": 2},
+    )
+    r = client.get("/api/execution/quality?limit_orders=200")
+    assert r.status_code == 200
+    body = r.json()
+    assert "summary" in body and "by_symbol" in body
+    assert body["summary"]["fills_analyzed"] >= 2
+
+
 def test_equity_series_endpoint(client: TestClient):
     client.post("/api/deposit", json={"amount": 1000.0})
     r = client.get("/api/equity-series")

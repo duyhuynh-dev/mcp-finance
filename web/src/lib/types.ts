@@ -406,3 +406,24 @@ export interface ExecutionPlanData {
     fill_price: number | null
   }>
 }
+
+export interface ExecutionQualityData {
+  summary: {
+    orders_analyzed: number
+    fills_analyzed: number
+    notional: number
+    fees: number
+    fee_bps_realized: number
+    implementation_shortfall_bps: number
+  }
+  by_symbol: Array<{
+    symbol: string
+    fills: number
+    notional: number
+    fees: number
+    fee_bps_realized: number
+    avg_buy_price: number | null
+    avg_sell_price: number | null
+    net_quantity: number
+  }>
+}

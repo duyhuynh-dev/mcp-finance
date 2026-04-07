@@ -44,6 +44,7 @@ from finance_core.backtest import BacktestConfig, run_backtest
 from finance_core.broadcast import event_bus
 from finance_core.events import event_timeline, max_event_id, replay_to_event
 from finance_core.execution_events import list_execution_events, replay_summary
+from finance_core.execution_quality import build_execution_quality
 from finance_core.ledger import Ledger, reset_demo_db
 from finance_core.observability import generate_request_id, metrics
 from finance_core.order_intents import (
@@ -454,6 +455,13 @@ def execution_replay(
     to_event_id: int | None = None,
 ) -> dict:
     return replay_summary(lg.conn, to_event_id=to_event_id)
+
+
+@app.get("/api/execution/quality")
+def execution_quality(
+    lg: Annotated[Ledger, Depends(get_ledger)], limit_orders: int = 500,
+) -> dict:
+    return build_execution_quality(lg.conn, limit_orders=limit_orders)
 
 
 @app.get("/api/quotes")

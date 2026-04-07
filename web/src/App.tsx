@@ -18,6 +18,7 @@ import AuditTimeline from './components/AuditTimeline'
 import BacktestPanel from './components/BacktestPanel'
 import ComparisonPanel from './components/ComparisonPanel'
 import EquityChart from './components/EquityChart'
+import ExecutionQualityPanel from './components/ExecutionQualityPanel'
 import FillsTable from './components/FillsTable'
 import Header from './components/Header'
 import MetricsPanel from './components/MetricsPanel'
@@ -218,6 +219,7 @@ export default function App() {
               <div className="space-y-6 animate-fade-in-up">
                 <ApiKeyPanel />
                 <MetricsPanel />
+                <ExecutionQualityPanel />
               </div>
             )}
           </div>
