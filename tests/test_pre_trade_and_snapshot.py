@@ -205,3 +205,34 @@ def test_risk_what_if_projection(client: TestClient) -> None:
     assert body["projected_notional"] > 0
     assert "risk_budget" in body
     assert "projected_gross_multiple_after" in body
+
+
+def test_simulation_scenario_crud_and_run(client: TestClient) -> None:
+    client.post("/api/deposit", json={"amount": 25_000.0})
+    cr = client.post(
+        "/api/sim/scenarios",
+        json={
+            "name": "s1",
+            "description": "smoke",
+            "legs": [
+                {"symbol": "AAPL", "side": "BUY", "quantity": 10.0},
+                {"symbol": "AAPL", "side": "SELL", "quantity": 2.0},
+            ],
+        },
+    )
+    assert cr.status_code == 200
+    sid = cr.json()["id"]
+
+    ls = client.get("/api/sim/scenarios")
+    assert ls.status_code == 200
+    assert any(int(s["id"]) == sid for s in ls.json()["scenarios"])
+
+    rn = client.post("/api/sim/run", json={"scenario_id": sid})
+    assert rn.status_code == 200
+    body = rn.json()
+    assert body["summary"]["legs"] == 2
+    assert "results" in body and len(body["results"]) == 2
+
+    dl = client.delete(f"/api/sim/scenarios/{sid}")
+    assert dl.status_code == 200
+    assert dl.json().get("ok") is True

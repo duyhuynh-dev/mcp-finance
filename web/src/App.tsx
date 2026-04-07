@@ -28,6 +28,7 @@ import ReplaySlider from './components/ReplaySlider'
 import ReconciliationPanel from './components/ReconciliationPanel'
 import RiskPanel from './components/RiskPanel'
 import SignalFeed from './components/SignalFeed'
+import ScenarioStudio from './components/ScenarioStudio'
 import StatCard from './components/StatCard'
 import StrategyDashboard from './components/StrategyDashboard'
 import StrategyPlayground from './components/StrategyPlayground'
@@ -192,6 +193,7 @@ export default function App() {
               <div className="space-y-6 animate-fade-in-up">
                 <BacktestPanel />
                 <StrategyPlayground />
+                <ScenarioStudio />
                 <ComparisonPanel />
               </div>
             )}

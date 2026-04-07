@@ -29,6 +29,8 @@ import type {
   RiskWhatIfResult,
   StrategyInfo,
   StrategySignal,
+  SimulationRunResult,
+  SimulationScenario,
   SweepResult,
 } from './types'
 
@@ -116,6 +118,56 @@ export function useRiskWhatIf() {
       order_kind?: string
       limit_price?: number | null
     }) => request<RiskWhatIfResult>('/api/risk/what-if', { method: 'POST', body: JSON.stringify(body) }),
+  })
+}
+
+export function useSimulationScenarios(limit = 100) {
+  return useQuery({
+    queryKey: ['sim-scenarios'],
+    queryFn: () => request<{ scenarios: SimulationScenario[] }>(`/api/sim/scenarios?limit=${limit}`),
+    staleTime: STALE,
+  })
+}
+
+export function useCreateSimulationScenario() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: {
+      name: string
+      description?: string
+      legs: Array<{
+        symbol: string
+        side: string
+        quantity: number
+        order_kind?: string
+        limit_price?: number | null
+      }>
+    }) => request('/api/sim/scenarios', { method: 'POST', body: JSON.stringify(body) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['sim-scenarios'] }),
+  })
+}
+
+export function useDeleteSimulationScenario() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (scenarioId: number) =>
+      request(`/api/sim/scenarios/${scenarioId}`, { method: 'DELETE' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['sim-scenarios'] }),
+  })
+}
+
+export function useRunSimulation() {
+  return useMutation({
+    mutationFn: (body: {
+      scenario_id?: number
+      legs?: Array<{
+        symbol: string
+        side: string
+        quantity: number
+        order_kind?: string
+        limit_price?: number | null
+      }>
+    }) => request<SimulationRunResult>('/api/sim/run', { method: 'POST', body: JSON.stringify(body) }),
   })
 }
 
@@ -459,6 +511,7 @@ const LIVE_KEYS = [
   'agents', 'event-timeline', 'alert-notifications', 'backtest-history',
   'strategies', 'strategy-signals', 'broker-status',
   'broker-reconciliation', 'order-intents-pending', 'risk-snapshot',
+  'sim-scenarios',
 ]
 
 export function useWebSocket() {

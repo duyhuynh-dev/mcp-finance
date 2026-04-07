@@ -136,6 +136,14 @@ CREATE TABLE IF NOT EXISTS execution_events (
   event_type TEXT NOT NULL,
   payload_json TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS simulation_scenarios (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT UNIQUE NOT NULL,
+  description TEXT,
+  scenario_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
 """
 
 
@@ -218,6 +226,18 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
               ts TEXT NOT NULL,
               event_type TEXT NOT NULL,
               payload_json TEXT NOT NULL
+            );
+            """
+        )
+    if not _table_exists(conn, "simulation_scenarios"):
+        conn.executescript(
+            """
+            CREATE TABLE simulation_scenarios (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              name TEXT UNIQUE NOT NULL,
+              description TEXT,
+              scenario_json TEXT NOT NULL,
+              created_at TEXT NOT NULL
             );
             """
         )

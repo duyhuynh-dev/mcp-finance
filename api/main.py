@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import os
 import time
@@ -69,7 +70,7 @@ from finance_core.risk import (
 from finance_core.risk_budget import build_risk_budget_section, check_var_cvar_budget
 from finance_core.signal_alpaca_bridge import forward_pending_strategy_signals
 from finance_core.simulator import PriceSimulator
-from finance_core.types import OrderKind, OrderSide, OrderStatus
+from finance_core.types import OrderKind, OrderSide, OrderStatus, utc_now
 from pydantic import BaseModel, Field
 
 logging.basicConfig(
@@ -633,11 +634,7 @@ class RiskWhatIfBody(BaseModel):
     limit_price: float | None = None
 
 
-@app.post("/api/risk/what-if")
-def risk_what_if(
-    request: Request, lg: Annotated[Ledger, Depends(get_ledger)], body: RiskWhatIfBody,
-) -> dict:
-    _require_permission(request, "trade")
+def _evaluate_risk_what_if(lg: Ledger, body: RiskWhatIfBody) -> dict[str, Any]:
     sym = body.symbol.strip().upper()
     side = OrderSide(body.side.strip().upper())
     order_kind = OrderKind(body.order_kind.strip().upper())
@@ -725,6 +722,128 @@ def risk_what_if(
             round(gross_multiple_after, 4) if gross_multiple_after is not None else None
         ),
         "risk_budget": build_risk_budget_section(lg.conn, lg.policy_engine.rules),
+    }
+
+
+@app.post("/api/risk/what-if")
+def risk_what_if(
+    request: Request, lg: Annotated[Ledger, Depends(get_ledger)], body: RiskWhatIfBody,
+) -> dict:
+    _require_permission(request, "trade")
+    return _evaluate_risk_what_if(lg, body)
+
+
+class SimulationScenarioCreateBody(BaseModel):
+    name: str
+    description: str = ""
+    legs: list[RiskWhatIfBody]
+
+
+@app.get("/api/sim/scenarios")
+def list_sim_scenarios(
+    request: Request, lg: Annotated[Ledger, Depends(get_ledger)], limit: int = 100,
+) -> dict:
+    _require_permission(request, "trade")
+    rows = lg.conn.execute(
+        "SELECT id, name, description, scenario_json, created_at "
+        "FROM simulation_scenarios ORDER BY id DESC LIMIT ?",
+        (min(limit, 200),),
+    ).fetchall()
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        payload = json.loads(str(r["scenario_json"]))
+        out.append({
+            "id": int(r["id"]),
+            "name": r["name"],
+            "description": r["description"] or "",
+            "legs": payload.get("legs", []),
+            "created_at": r["created_at"],
+        })
+    return {"scenarios": out}
+
+
+@app.post("/api/sim/scenarios")
+def create_sim_scenario(
+    request: Request,
+    lg: Annotated[Ledger, Depends(get_ledger)],
+    body: SimulationScenarioCreateBody,
+) -> dict:
+    _require_permission(request, "trade")
+    if not body.legs:
+        raise HTTPException(status_code=400, detail="at least one leg required")
+    ts = utc_now().isoformat()
+    payload = json.dumps({
+        "legs": [leg.model_dump() for leg in body.legs],
+    })
+    cur = lg.conn.execute(
+        "INSERT INTO simulation_scenarios (name, description, scenario_json, created_at) "
+        "VALUES (?, ?, ?, ?)",
+        (body.name.strip(), body.description.strip(), payload, ts),
+    )
+    lg.conn.commit()
+    return {"id": int(cur.lastrowid), "name": body.name.strip(), "created_at": ts}
+
+
+@app.delete("/api/sim/scenarios/{scenario_id}")
+def delete_sim_scenario(
+    request: Request, lg: Annotated[Ledger, Depends(get_ledger)], scenario_id: int,
+) -> dict:
+    _require_permission(request, "trade")
+    lg.conn.execute("DELETE FROM simulation_scenarios WHERE id = ?", (scenario_id,))
+    lg.conn.commit()
+    return {"ok": True}
+
+
+class SimulationRunBody(BaseModel):
+    scenario_id: int | None = None
+    legs: list[RiskWhatIfBody] = Field(default_factory=list)
+
+
+@app.post("/api/sim/run")
+def run_simulation(
+    request: Request, lg: Annotated[Ledger, Depends(get_ledger)], body: SimulationRunBody,
+) -> dict:
+    _require_permission(request, "trade")
+    legs: list[RiskWhatIfBody] = []
+    scenario_name: str | None = None
+    if body.scenario_id is not None:
+        row = lg.conn.execute(
+            "SELECT name, scenario_json FROM simulation_scenarios WHERE id = ?",
+            (body.scenario_id,),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="scenario not found")
+        scenario_name = str(row["name"])
+        payload = json.loads(str(row["scenario_json"]))
+        legs = [RiskWhatIfBody(**x) for x in payload.get("legs", [])]
+    elif body.legs:
+        legs = body.legs
+    else:
+        raise HTTPException(status_code=400, detail="scenario_id or legs required")
+
+    results = [_evaluate_risk_what_if(lg, leg) for leg in legs]
+    allowed = [r for r in results if r.get("allowed")]
+    rejected = [r for r in results if not r.get("allowed")]
+    reason_counts: dict[str, int] = {}
+    for r in rejected:
+        rs = str(r.get("reason") or "UNKNOWN")
+        reason_counts[rs] = reason_counts.get(rs, 0) + 1
+    top_reasons = sorted(reason_counts.items(), key=lambda x: x[1], reverse=True)
+    return {
+        "scenario_name": scenario_name,
+        "summary": {
+            "legs": len(results),
+            "allowed": len(allowed),
+            "rejected": len(rejected),
+            "acceptance_rate": round(len(allowed) / len(results), 4) if results else 0.0,
+            "projected_notional_allowed": round(
+                sum(float(r.get("projected_notional") or 0.0) for r in allowed), 2,
+            ),
+            "top_rejection_reasons": [
+                {"reason": k, "count": v} for k, v in top_reasons[:5]
+            ],
+        },
+        "results": results,
     }
 
 

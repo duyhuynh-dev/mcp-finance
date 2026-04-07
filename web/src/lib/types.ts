@@ -158,6 +158,33 @@ export interface RiskWhatIfResult {
   risk_budget?: RiskSnapshot['budget']
 }
 
+export interface SimulationScenario {
+  id: number
+  name: string
+  description: string
+  legs: Array<{
+    symbol: string
+    side: string
+    quantity: number
+    order_kind?: string
+    limit_price?: number | null
+  }>
+  created_at: string
+}
+
+export interface SimulationRunResult {
+  scenario_name?: string | null
+  summary: {
+    legs: number
+    allowed: number
+    rejected: number
+    acceptance_rate: number
+    projected_notional_allowed: number
+    top_rejection_reasons: Array<{ reason: string; count: number }>
+  }
+  results: RiskWhatIfResult[]
+}
+
 export interface ReconciliationResult {
   enabled: boolean
   reason?: string
