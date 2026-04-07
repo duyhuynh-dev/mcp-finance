@@ -12,8 +12,12 @@ export interface PolicyRules {
   max_order_notional: number
   fee_bps: number
   slippage_bps: number
+  slippage_impact_bps_per_million?: number
+  max_gross_exposure_multiple?: number
   max_daily_order_count: number
   max_portfolio_concentration_pct: number
+  max_portfolio_var_95_pct_of_equity?: number
+  max_portfolio_cvar_95_pct_of_equity?: number
 }
 
 export interface Portfolio {
@@ -101,8 +105,87 @@ export interface AgentData {
   budget: number
   max_order_notional: number
   allowed_symbols: string[]
+  allowed_mcp_tools?: string[] | null
   is_active: boolean
   created_at: string
+}
+
+export interface RiskSnapshot {
+  metrics: RiskMetrics
+  estimated_equity: number
+  gross_position_notional: number
+  gross_exposure_multiple: number | null
+  policy: {
+    max_gross_exposure_multiple: number
+    max_order_notional: number
+    max_shares_per_symbol: number
+    slippage_bps: number
+    slippage_impact_bps_per_million: number
+    max_portfolio_var_95_pct_of_equity?: number
+    max_portfolio_cvar_95_pct_of_equity?: number
+  }
+  budget?: {
+    var_95_pct_of_equity: number | null
+    cvar_95_pct_of_equity: number | null
+    return_sample_size: number
+    sufficient_for_budget: boolean
+    max_portfolio_var_95_pct_of_equity: number
+    max_portfolio_cvar_95_pct_of_equity: number
+    var_95_utilization?: number | null
+    cvar_95_utilization?: number | null
+    max_utilization?: number | null
+    near_limit?: boolean
+  }
+  position_count: number
+}
+
+export interface RiskWhatIfResult {
+  allowed: boolean
+  reason: string | null
+  symbol?: string
+  side?: string
+  order_kind?: string
+  requested_quantity?: number
+  adjusted_quantity?: number
+  would_resize?: boolean
+  estimated_mark_price?: number
+  estimated_fill_price?: number
+  projected_notional?: number
+  estimated_fee?: number
+  projected_gross_notional_before?: number
+  projected_gross_notional_after?: number
+  projected_gross_multiple_after?: number | null
+  risk_budget?: RiskSnapshot['budget']
+}
+
+export interface ReconciliationResult {
+  enabled: boolean
+  reason?: string
+  error?: string
+  ledger_positions: Record<string, number>
+  broker_positions?: Record<string, number>
+  mismatches?: Array<{
+    symbol: string
+    ledger_qty: number
+    broker_qty: number
+    delta: number
+  }>
+  in_sync?: boolean
+}
+
+export interface OrderIntent {
+  id: number
+  client_order_id: string
+  symbol: string
+  side: string
+  quantity: number
+  order_kind: string
+  limit_price: number | null
+  agent_id: number | null
+  actor: string
+  status: string
+  created_at: string
+  resolved_at: string | null
 }
 
 export interface AgentStats {

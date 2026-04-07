@@ -77,9 +77,11 @@ Use the same `FINANCE_DB_PATH` as the API. Optional: `FINANCE_QUOTE_BACKEND=yaho
 
 **Tools:** `get_quote`, `list_symbols` · `get_state`, `place_order` (optional `order_kind` MARKET/LIMIT, `limit_price`), `cancel_order`, `list_recent_orders`, `list_recent_fills`, `get_risk_metrics`, agents + backtest helpers.
 
-**Quant / ML (same DB as the API):** `list_quant_strategies`, `set_quant_strategy_active`, `run_quant_strategies_once`, `list_quant_signals`, `start_quant_engine`, `stop_quant_engine`, `get_quant_engine_status`, `finance_stack_health`, `get_ml_alpha_diagnostics`, `get_strategy_diagnostics` (holdout Brier / accuracy / ROC-AUC in diagnostics when `ml_alpha` has trained).
+**Quant / ML (same DB as the API):** `list_quant_strategies`, `set_quant_strategy_active`, `run_quant_strategies_once`, `list_quant_signals`, `start_quant_engine`, `stop_quant_engine`, `get_quant_engine_status`, `finance_stack_health`, `get_ml_alpha_diagnostics`, `get_strategy_diagnostics`, `get_risk_snapshot`, `stress_portfolio`, `reconcile_ledger_vs_broker`, `forward_strategy_signals_to_alpaca` (needs `SIGNALS_TO_ALPACA=1`), `create_pending_order_intent`, `list_pending_order_intents`, `approve_pending_order_intent`. Agents may set `allowed_mcp_tools` (JSON array) to restrict those tools when using `agent_id`.
 
-See `IMPLEMENTATION_PLAN.md` for execution, risk, and governance follow-ups.
+**REST (selected):** `GET /api/risk/snapshot`, `POST /api/risk/stress`, `GET /api/broker/reconciliation`, `GET /api/execution-events`, `GET /api/execution-events/replay`, `POST /api/order-intents`, `GET /api/order-intents/pending`, `POST /api/order-intents/{id}/approve|reject`, `POST /api/strategies/forward-signals-alpaca` (flagged). Policy: `max_gross_exposure_multiple`, `slippage_impact_bps_per_million`. Env: `HEALTH_CHECK_ALPACA`, `SIGNALS_TO_ALPACA`, `BROKER_EXECUTION_MODE` (`internal` or `alpaca_paper`) (see `.env.example`).
+
+See `IMPLEMENTATION_PLAN.md` for what is shipped vs optional next steps.
 
 ## Scripted demo (no LLM)
 

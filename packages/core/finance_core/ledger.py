@@ -7,9 +7,13 @@ from typing import Any
 from finance_core.audit import append_audit
 from finance_core.broadcast import event_bus
 from finance_core.db import init_schema, transaction
+from finance_core.execution_events import append_execution_event
 from finance_core.market import MockQuoteProvider, QuoteProvider
 from finance_core.orderbook import LiquidityConfig, compute_fill_quantity
 from finance_core.policy import PolicyEngine, PolicyRules
+from finance_core.pre_trade_risk import clamp_quantity_for_gross_exposure
+from finance_core.request_context import get_request_id
+from finance_core.risk_budget import check_var_cvar_budget
 from finance_core.types import (
     FillRecord,
     OrderKind,
@@ -75,8 +79,15 @@ class Ledger:
         bps = self._policy.rules.fee_bps
         return round(notional * bps / 10_000.0, 6)
 
-    def _apply_slippage(self, price: float, side: OrderSide) -> float:
-        bps = self._policy.rules.slippage_bps
+    def _apply_slippage(
+        self, price: float, side: OrderSide, order_notional: float = 0.0,
+    ) -> float:
+        rules = self._policy.rules
+        bps = float(rules.slippage_bps)
+        if rules.slippage_impact_bps_per_million and order_notional > 0:
+            bps += rules.slippage_impact_bps_per_million * (
+                order_notional / 1_000_000.0
+            )
         if bps == 0:
             return price
         factor = bps / 10_000.0
@@ -143,7 +154,11 @@ class Ledger:
     # ── account ───────────────────────────────────────────────
 
     def _emit(self, event_type: str, data: dict) -> None:
-        event_bus.publish({"type": event_type, **data})
+        evt: dict[str, Any] = {"type": event_type, **data}
+        rid = get_request_id()
+        if rid:
+            evt["request_id"] = rid
+        event_bus.publish(evt)
 
     def deposit(self, amount: float, *, actor: str = "api") -> float:
         if amount <= 0:
@@ -284,6 +299,11 @@ class Ledger:
             (ts, equity),
         )
 
+    def snapshot_equity(self) -> None:
+        """Record current equity into equity_snapshots."""
+        with transaction(self._conn):
+            self._maybe_snapshot_equity()
+
     # ── order placement ──────────────────────────────────────
 
     def place_order(
@@ -360,13 +380,67 @@ class Ledger:
                 client_order_id, sym, side, quantity, pr.reason, actor, price,
             )
 
+        eq = self.estimated_equity()
+        q_adj, rpre = clamp_quantity_for_gross_exposure(
+            rules=self._policy.rules,
+            equity=eq,
+            positions=state.positions,
+            symbol=sym,
+            side=side,
+            quantity=quantity,
+            price=policy_price,
+        )
+        if rpre is not None:
+            return self._reject_new_order(
+                client_order_id, sym, side, quantity, rpre, actor, price,
+            )
+        if q_adj <= 0:
+            return self._reject_new_order(
+                client_order_id, sym, side, quantity,
+                RejectionReason.INVALID_QUANTITY, actor, price,
+            )
+        if q_adj + 1e-9 < quantity:
+            quantity = q_adj
+            pos_after = (
+                pos_now + quantity if side == OrderSide.BUY else pos_now - quantity
+            )
+            pr2 = self._policy.check(
+                symbol=sym,
+                side=side,
+                quantity=quantity,
+                price=policy_price,
+                state=state,
+                position_after=pos_after,
+                daily_order_count=self._daily_order_count(),
+                equity=eq,
+            )
+            if not pr2.allowed and pr2.reason:
+                return self._reject_new_order(
+                    client_order_id, sym, side, quantity,
+                    pr2.reason, actor, price,
+                )
+
+        rb = check_var_cvar_budget(
+            self._conn,
+            self._policy.rules,
+            state.positions,
+            sym,
+            side,
+            quantity,
+            policy_price,
+        )
+        if rb is not None:
+            return self._reject_new_order(
+                client_order_id, sym, side, quantity, rb, actor, price,
+            )
+
         if order_kind == OrderKind.LIMIT:
             return self._place_limit_order(
                 client_order_id, sym, side, quantity,
                 float(limit_price), price, actor, agent_id,
             )
 
-        fill_price = self._apply_slippage(price, side)
+        fill_price = self._apply_slippage(price, side, quantity * price)
 
         fill_qty = compute_fill_quantity(quantity, liquidity, sym)
         fill_qty = min(fill_qty, quantity)
@@ -446,6 +520,20 @@ class Ledger:
                 },
                 result=result.to_audit_dict(),
             )
+            append_execution_event(
+                self._conn,
+                event_type="order_filled",
+                payload={
+                    "order_id": oid,
+                    "client_order_id": client_order_id,
+                    "symbol": sym,
+                    "side": side.value,
+                    "status": status.value,
+                    "filled_quantity": fill_qty,
+                    "remaining_quantity": remaining,
+                    "fill_price": fill_price,
+                },
+            )
             self._maybe_snapshot_equity(new_cash)
         self._emit("fill", {
             "order_id": oid, "symbol": sym, "side": side.value,
@@ -505,6 +593,20 @@ class Ledger:
                 },
                 result=result.to_audit_dict(),
             )
+            append_execution_event(
+                self._conn,
+                event_type="order_opened",
+                payload={
+                    "order_id": oid,
+                    "client_order_id": client_order_id,
+                    "symbol": sym,
+                    "side": side.value,
+                    "status": OrderStatus.PENDING.value,
+                    "quantity": quantity,
+                    "order_kind": OrderKind.LIMIT.value,
+                    "limit_price": limit_px,
+                },
+            )
         self._try_fill_pending_limit_orders()
         return result
 
@@ -532,7 +634,7 @@ class Ledger:
             )
             if not fillable:
                 continue
-            fill_price = self._apply_slippage(px, side)
+            fill_price = self._apply_slippage(px, side, qty * px)
             cash = self.get_cash()
             pos_now = self.position_quantity(sym)
             notional = qty * fill_price
@@ -572,6 +674,19 @@ class Ledger:
                     payload={"order_id": oid, "price": fill_price},
                     result={"fee": fee, "realized_pnl": rpnl},
                 )
+                append_execution_event(
+                    self._conn,
+                    event_type="order_filled",
+                    payload={
+                        "order_id": oid,
+                        "symbol": sym,
+                        "side": side.value,
+                        "status": OrderStatus.FILLED.value,
+                        "filled_quantity": qty,
+                        "remaining_quantity": 0.0,
+                        "fill_price": fill_price,
+                    },
+                )
                 self._maybe_snapshot_equity(new_cash)
 
     def sweep_partial_orders(
@@ -606,7 +721,7 @@ class Ledger:
                 px = self._quotes.get_quote(sym).price
             except ValueError:
                 continue
-            fill_price = self._apply_slippage(px, side)
+            fill_price = self._apply_slippage(px, side, remaining * px)
             fill_qty = compute_fill_quantity(remaining, liquidity, sym)
             fill_qty = min(fill_qty, remaining)
             if fill_qty < 1e-9:
@@ -656,6 +771,19 @@ class Ledger:
                     payload={"order_id": oid, "fill_qty": fill_qty},
                     result={"fee": fee, "remaining": new_remaining},
                 )
+                append_execution_event(
+                    self._conn,
+                    event_type="order_filled",
+                    payload={
+                        "order_id": oid,
+                        "symbol": sym,
+                        "side": side.value,
+                        "status": new_status.value,
+                        "filled_quantity": fill_qty,
+                        "remaining_quantity": new_remaining,
+                        "fill_price": fill_price,
+                    },
+                )
                 self._maybe_snapshot_equity(new_cash)
             self._emit("fill", {
                 "order_id": oid, "symbol": sym, "side": side.value,
@@ -688,8 +816,154 @@ class Ledger:
                 self._conn, actor=actor, action="cancel_order",
                 payload={"order_id": order_id}, result={"ok": True},
             )
+            append_execution_event(
+                self._conn,
+                event_type="order_cancelled",
+                payload={"order_id": order_id, "status": OrderStatus.CANCELLED.value},
+            )
         self._emit("cancel", {"order_id": order_id})
         return {"ok": True, "order_id": order_id}
+
+    def mirror_broker_execution(
+        self,
+        *,
+        client_order_id: str,
+        symbol: str,
+        side: OrderSide,
+        quantity: float,
+        status: OrderStatus,
+        fill_price: float | None = None,
+        filled_quantity: float = 0.0,
+        broker_order_id: str | None = None,
+        actor: str = "broker_bridge",
+        order_kind: OrderKind = OrderKind.MARKET,
+        limit_price: float | None = None,
+        agent_id: int | None = None,
+        fees: float = 0.0,
+    ) -> PlaceOrderResult:
+        """Persist externally executed broker result into local ledger tables."""
+        sym = symbol.upper()
+        existing = self._conn.execute(
+            "SELECT * FROM orders WHERE client_order_id = ?",
+            (client_order_id,),
+        ).fetchone()
+        if existing:
+            return self._existing_result(existing)
+
+        q = float(quantity)
+        fq = max(0.0, min(float(filled_quantity), q))
+        rem = round(q - fq, 6)
+        rpnl = 0.0
+        if side == OrderSide.SELL and fq > 0 and fill_price is not None:
+            rpnl = self._realized_pnl_for_sell(sym, float(fill_price), fq)
+
+        with transaction(self._conn):
+            cur = self._conn.execute(
+                """
+                INSERT INTO orders (
+                    client_order_id, symbol, side, quantity,
+                    status, rejection_reason, order_kind, limit_price,
+                    agent_id, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
+                """,
+                (
+                    client_order_id,
+                    sym,
+                    side.value,
+                    q,
+                    status.value,
+                    order_kind.value,
+                    limit_price,
+                    agent_id,
+                    utc_now().isoformat(),
+                ),
+            )
+            oid = int(cur.lastrowid)
+            new_cash = self.get_cash()
+            if fq > 0 and fill_price is not None:
+                notional = fq * float(fill_price)
+                fee = float(fees) if fees > 0 else self._fee_amount(notional)
+                self._conn.execute(
+                    """
+                    INSERT INTO fills
+                        (order_id, symbol, side, quantity, price, fee, realized_pnl, filled_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        oid,
+                        sym,
+                        side.value,
+                        fq,
+                        float(fill_price),
+                        fee,
+                        rpnl,
+                        utc_now().isoformat(),
+                    ),
+                )
+                if side == OrderSide.BUY:
+                    new_cash = new_cash - notional - fee
+                else:
+                    new_cash = new_cash + notional - fee
+                self._conn.execute(
+                    "UPDATE account SET cash = ? WHERE id = 1",
+                    (new_cash,),
+                )
+                self._maybe_snapshot_equity(new_cash)
+
+            result = PlaceOrderResult(
+                success=status != OrderStatus.REJECTED,
+                order_id=oid,
+                status=status,
+                fill_price=float(fill_price) if fill_price is not None else None,
+                filled_quantity=fq if fq > 0 else None,
+                remaining_quantity=rem if rem > 0 else 0.0,
+                message="broker_mirrored",
+            )
+            append_audit(
+                self._conn,
+                actor=actor,
+                action="mirror_broker_execution",
+                payload={
+                    "client_order_id": client_order_id,
+                    "symbol": sym,
+                    "side": side.value,
+                    "quantity": q,
+                    "status": status.value,
+                    "broker_order_id": broker_order_id,
+                },
+                result=result.to_audit_dict(),
+            )
+            append_execution_event(
+                self._conn,
+                event_type="order_filled" if fq > 0 else "order_opened",
+                payload={
+                    "order_id": oid,
+                    "client_order_id": client_order_id,
+                    "symbol": sym,
+                    "side": side.value,
+                    "status": status.value,
+                    "filled_quantity": fq,
+                    "remaining_quantity": rem,
+                    "fill_price": float(fill_price) if fill_price is not None else None,
+                    "broker_order_id": broker_order_id,
+                },
+            )
+
+        if fq > 0 and fill_price is not None:
+            self._emit(
+                "fill",
+                {
+                    "order_id": oid,
+                    "symbol": sym,
+                    "side": side.value,
+                    "quantity": fq,
+                    "price": float(fill_price),
+                    "remaining": rem,
+                    "broker_order_id": broker_order_id,
+                },
+            )
+        return result
 
     # ── idempotency helpers ──────────────────────────────────
 
@@ -770,6 +1044,18 @@ class Ledger:
                     "quantity": quantity,
                 },
                 result=result.to_audit_dict(),
+            )
+            append_execution_event(
+                self._conn,
+                event_type="order_rejected",
+                payload={
+                    "order_id": oid,
+                    "client_order_id": client_order_id,
+                    "symbol": symbol,
+                    "side": side.value,
+                    "quantity": quantity,
+                    "rejection_reason": reason.value,
+                },
             )
         return result
 

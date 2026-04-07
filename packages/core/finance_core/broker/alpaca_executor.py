@@ -156,3 +156,16 @@ class AlpacaOrderExecutor(OrderExecutor):
                 "connected": False,
                 "error": str(e),
             }
+
+    def list_open_stock_positions(self) -> list[dict]:
+        """Open stock positions (qty, symbol) for reconciliation."""
+        client = self._ensure_client()
+        positions = client.get_all_positions()
+        out: list[dict] = []
+        for p in positions:
+            out.append({
+                "symbol": str(p.symbol),
+                "qty": float(p.qty),
+                "market_value": float(getattr(p, "market_value", 0) or 0),
+            })
+        return out

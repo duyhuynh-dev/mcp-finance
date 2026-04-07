@@ -1,8 +1,14 @@
-import { fmt, pct, useRisk } from '../lib/api'
+import { useState } from 'react'
+import { fmt, pct, useRisk, useRiskSnapshot, useRiskWhatIf } from '../lib/api'
 import LoadingSkeleton from './LoadingSkeleton'
 
 export default function RiskPanel() {
   const { data: m, isLoading } = useRisk()
+  const { data: snap } = useRiskSnapshot()
+  const whatIf = useRiskWhatIf()
+  const [symbol, setSymbol] = useState('AAPL')
+  const [side, setSide] = useState('BUY')
+  const [quantity, setQuantity] = useState('10')
 
   if (isLoading) {
     return (
@@ -53,6 +59,26 @@ export default function RiskPanel() {
   return (
     <section>
       <h2 className="font-display mb-3 text-sm font-bold tracking-tight text-white">Risk Analytics</h2>
+      {snap?.budget && (
+        <div className="mb-4 rounded-xl border border-zinc-800/30 bg-zinc-900/30 p-3">
+          <div className="flex items-center justify-between">
+            <p className="font-display text-[10px] font-bold uppercase tracking-[0.15em] text-zinc-500">Risk Budget</p>
+            <span
+              className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                snap.budget.near_limit ? 'bg-amber-500/20 text-amber-300' : 'bg-emerald-500/20 text-emerald-300'
+              }`}
+            >
+              {snap.budget.near_limit ? 'Near limit' : 'Healthy'}
+            </span>
+          </div>
+          <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-zinc-300 md:grid-cols-4">
+            <p>Samples: <span className="font-mono">{snap.budget.return_sample_size}</span></p>
+            <p>VaR util: <span className="font-mono">{snap.budget.var_95_utilization != null ? pct(snap.budget.var_95_utilization) : '—'}</span></p>
+            <p>CVaR util: <span className="font-mono">{snap.budget.cvar_95_utilization != null ? pct(snap.budget.cvar_95_utilization) : '—'}</span></p>
+            <p>Max util: <span className="font-mono">{snap.budget.max_utilization != null ? pct(snap.budget.max_utilization) : '—'}</span></p>
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
         {metrics.map((m2) => (
@@ -130,6 +156,54 @@ export default function RiskPanel() {
           </div>
         </div>
       )}
+
+      <div className="mt-5 rounded-xl border border-zinc-800/30 bg-zinc-900/30 p-3">
+        <p className="mb-2 font-display text-[10px] font-bold uppercase tracking-[0.15em] text-zinc-500">What-if order impact</p>
+        <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+          <input className="glass-input rounded-lg px-2 py-1.5 text-sm" value={symbol} onChange={(e) => setSymbol(e.target.value.toUpperCase())} />
+          <select className="glass-input rounded-lg px-2 py-1.5 text-sm" value={side} onChange={(e) => setSide(e.target.value)}>
+            <option value="BUY">BUY</option>
+            <option value="SELL">SELL</option>
+          </select>
+          <input
+            className="glass-input rounded-lg px-2 py-1.5 text-sm"
+            value={quantity}
+            onChange={(e) => setQuantity(e.target.value)}
+            type="number"
+            min="0.0001"
+            step="0.01"
+          />
+          <button
+            type="button"
+            className="rounded-lg border border-indigo-500/40 bg-indigo-500/10 px-3 py-1.5 text-sm font-semibold text-indigo-300 hover:bg-indigo-500/20"
+            onClick={() =>
+              whatIf.mutate({
+                symbol,
+                side,
+                quantity: Number(quantity),
+                order_kind: 'MARKET',
+              })
+            }
+            disabled={whatIf.isPending || !Number(quantity)}
+          >
+            {whatIf.isPending ? 'Simulating…' : 'Run what-if'}
+          </button>
+        </div>
+        {whatIf.data && (
+          <div className="mt-3 text-xs text-zinc-300">
+            {whatIf.data.allowed ? (
+              <div className="space-y-1">
+                <p className="text-emerald-300">Allowed {whatIf.data.would_resize ? '(resized)' : ''}</p>
+                <p>Projected notional: <span className="font-mono">{fmt(whatIf.data.projected_notional ?? 0)}</span></p>
+                <p>Projected gross multiple: <span className="font-mono">{whatIf.data.projected_gross_multiple_after?.toFixed(4) ?? '—'}</span></p>
+                <p>Estimated fill / fee: <span className="font-mono">{fmt(whatIf.data.estimated_fill_price ?? 0)} / {fmt(whatIf.data.estimated_fee ?? 0)}</span></p>
+              </div>
+            ) : (
+              <p className="text-rose-300">Rejected: <span className="font-mono">{whatIf.data.reason}</span></p>
+            )}
+          </div>
+        )}
+      </div>
     </section>
   )
 }

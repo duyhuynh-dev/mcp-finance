@@ -112,3 +112,24 @@ def test_rule_to_dict() -> None:
     assert d["name"] == "dict_test"
     assert d["alert_type"] == "equity_above"
     assert d["threshold"] == 200_000
+
+
+def test_evaluate_risk_budget_usage_alert() -> None:
+    conn = _db()
+    engine = AlertEngine(conn)
+    engine.create_rule(
+        "budget_high",
+        AlertType.RISK_BUDGET_USAGE_ABOVE,
+        0.8,
+    )
+
+    fired = engine.evaluate(
+        equity=100_000,
+        cash=100_000,
+        positions={},
+        realized_pnl=0.0,
+        max_drawdown_pct=0.0,
+        risk_budget_max_utilization=0.92,
+    )
+    assert len(fired) == 1
+    assert "budget utilization" in fired[0].message.lower()

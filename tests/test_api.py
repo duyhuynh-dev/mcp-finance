@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from finance_core.broker.base import ExecutionResult
 from finance_core.ledger import Ledger
 from finance_core.market import MockQuoteProvider
 from finance_core.policy import PolicyEngine, PolicyRules
@@ -64,6 +65,55 @@ def test_momentum_diagnostics_not_available(client: TestClient):
     assert r.status_code == 404
 
 
+def test_place_order_broker_mode_mirrors_fill(client: TestClient, monkeypatch):
+    from finance_core.broker.alpaca_executor import AlpacaOrderExecutor
+
+    import api.main as main_mod
+
+    monkeypatch.setenv("BROKER_EXECUTION_MODE", "alpaca_paper")
+
+    def _fake_submit(
+        self,
+        symbol: str,
+        side: str,
+        quantity: float,
+        order_type: str = "market",
+        limit_price: float | None = None,
+        time_in_force: str = "day",
+    ) -> ExecutionResult:
+        _ = (self, symbol, side, order_type, limit_price, time_in_force)
+        return ExecutionResult(
+            filled=True,
+            fill_price=180.0,
+            fill_quantity=quantity,
+            remaining_quantity=0.0,
+            broker_order_id="paper-123",
+            fees=0.0,
+        )
+
+    monkeypatch.setattr(AlpacaOrderExecutor, "submit_order", _fake_submit)
+    client.post("/api/deposit", json={"amount": 10_000.0})
+    r = client.post(
+        "/api/place-order",
+        json={
+            "client_order_id": "broker-mirror-1",
+            "symbol": "AAPL",
+            "side": "BUY",
+            "quantity": 10,
+            "order_kind": "MARKET",
+        },
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["success"] is True
+    assert body["status"] == "FILLED"
+    assert body["broker_mode"] == "alpaca_paper"
+    assert body["broker_order_id"] == "paper-123"
+
+    monkeypatch.setenv("BROKER_EXECUTION_MODE", "internal")
+    main_mod.os.environ["BROKER_EXECUTION_MODE"] = "internal"
+
+
 def test_deposit_and_portfolio(client: TestClient):
     r = client.post("/api/deposit", json={"amount": 1000.0})
     assert r.status_code == 200
@@ -75,6 +125,34 @@ def test_deposit_and_portfolio(client: TestClient):
     assert "total_unrealized_pnl" in data
     assert "rules" in data
     assert "slippage_bps" in data["rules"]
+
+
+def test_execution_events_and_replay(client: TestClient):
+    import api.main as main_mod
+
+    main_mod.os.environ["BROKER_EXECUTION_MODE"] = "internal"
+    client.post("/api/deposit", json={"amount": 10_000.0})
+    client.post(
+        "/api/place-order",
+        json={
+            "client_order_id": "evt-1",
+            "symbol": "AAPL",
+            "side": "BUY",
+            "quantity": 2,
+            "order_kind": "MARKET",
+        },
+    )
+    ev = client.get("/api/execution-events?limit=20")
+    assert ev.status_code == 200
+    events = ev.json()["events"]
+    assert len(events) >= 1
+    assert any(e["event_type"] in ("order_filled", "order_opened") for e in events)
+
+    rp = client.get("/api/execution-events/replay")
+    assert rp.status_code == 200
+    body = rp.json()
+    assert "total_events" in body
+    assert body["total_events"] >= 1
 
 
 def test_place_order_buy(client: TestClient):

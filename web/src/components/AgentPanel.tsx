@@ -8,14 +8,23 @@ export default function AgentPanel() {
   const register = useRegisterAgent()
   const [newName, setNewName] = useState('')
   const [newBudget, setNewBudget] = useState('50000')
+  const [newTools, setNewTools] = useState('')
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const { data: stats } = useAgentStats(selectedId)
 
   const handleRegister = () => {
     if (!newName.trim()) return
+    const allowed_mcp_tools = newTools
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
     register.mutate(
-      { name: newName.trim(), budget: Number(newBudget) },
-      { onSuccess: () => { setNewName(''); setNewBudget('50000') } },
+      {
+        name: newName.trim(),
+        budget: Number(newBudget),
+        allowed_mcp_tools: allowed_mcp_tools.length ? allowed_mcp_tools : null,
+      },
+      { onSuccess: () => { setNewName(''); setNewBudget('50000'); setNewTools('') } },
     )
   }
 
@@ -50,6 +59,17 @@ export default function AgentPanel() {
         >
           Register Agent
         </button>
+        <div className="min-w-[18rem]">
+          <label className="mb-1.5 block text-[11px] uppercase tracking-widest text-zinc-600">
+            MCP tools (comma-separated)
+          </label>
+          <input
+            className="glass-input w-full rounded-lg px-3 py-2 font-mono text-sm text-zinc-100"
+            value={newTools}
+            onChange={(e) => setNewTools(e.target.value)}
+            placeholder="place_order,run_quant_strategies_once"
+          />
+        </div>
       </div>
 
       {isError ? (
@@ -73,6 +93,11 @@ export default function AgentPanel() {
             >
               <span className="font-mono font-medium text-indigo-300">{a.name}</span>
               <span className="ml-3 text-zinc-600">budget {fmt(a.budget)}</span>
+              {a.allowed_mcp_tools && (
+                <span className="ml-3 text-[11px] text-zinc-500">
+                  tools: {a.allowed_mcp_tools.join(', ')}
+                </span>
+              )}
               {!a.is_active && <span className="ml-2 text-[11px] text-rose-400">inactive</span>}
             </button>
           ))}

@@ -19,6 +19,7 @@ class AlertType(StrEnum):
     EQUITY_BELOW = "equity_below"
     EQUITY_ABOVE = "equity_above"
     LOSS_STREAK = "loss_streak"
+    RISK_BUDGET_USAGE_ABOVE = "risk_budget_usage_above"
 
 
 @dataclass
@@ -143,6 +144,7 @@ class AlertEngine:
         positions: dict[str, float],
         realized_pnl: float,
         max_drawdown_pct: float,
+        risk_budget_max_utilization: float | None = None,
     ) -> list[AlertNotification]:
         """Check all active rules against current portfolio state."""
         rules = self._conn.execute(
@@ -159,7 +161,7 @@ class AlertEngine:
 
             msg = self._check_rule(
                 rule, equity, cash, positions, realized_pnl,
-                max_drawdown_pct, total_value,
+                max_drawdown_pct, total_value, risk_budget_max_utilization,
             )
             if msg:
                 n = self._fire(rule, msg)
@@ -176,6 +178,7 @@ class AlertEngine:
         realized_pnl: float,
         max_dd_pct: float,
         total_value: float,
+        risk_budget_max_utilization: float | None = None,
     ) -> str | None:
         t = rule.threshold
 
@@ -209,6 +212,15 @@ class AlertEngine:
             streak = self._current_loss_streak()
             if streak >= int(t):
                 return f"Loss streak of {streak} trades (threshold: {int(t)})"
+        elif rule.alert_type == AlertType.RISK_BUDGET_USAGE_ABOVE:
+            if (
+                risk_budget_max_utilization is not None
+                and risk_budget_max_utilization > t
+            ):
+                return (
+                    "Risk budget utilization "
+                    f"{risk_budget_max_utilization:.1%} exceeds {t:.1%} threshold"
+                )
 
         return None
 

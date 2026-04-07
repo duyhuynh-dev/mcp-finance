@@ -4,6 +4,7 @@ import json
 import sqlite3
 from typing import Any
 
+from finance_core.request_context import get_request_id
 from finance_core.types import utc_now
 
 
@@ -14,7 +15,11 @@ def append_audit(
     action: str,
     payload: dict[str, Any],
     result: dict[str, Any] | None = None,
+    request_id: str | None = None,
 ) -> int:
+    rid = request_id if request_id is not None else get_request_id()
+    if rid:
+        payload = {**payload, "request_id": rid}
     ts = utc_now().isoformat()
     cur = conn.execute(
         """

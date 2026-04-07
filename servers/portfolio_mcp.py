@@ -11,12 +11,25 @@ _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _ROOT not in sys.path:
     sys.path.insert(0, os.path.join(_ROOT, "packages", "core"))
 
+import json
+
 from finance_core.agents import AgentManager
 from finance_core.audit import list_audit
 from finance_core.backtest import BacktestConfig, run_backtest
 from finance_core.ledger import Ledger
+from finance_core.order_intents import (
+    approve_order_intent as submit_approved_intent,
+)
+from finance_core.order_intents import (
+    create_order_intent as create_intent_row,
+)
+from finance_core.order_intents import (
+    list_pending_intents as list_intents_pending_core,
+)
 from finance_core.quote_factory import create_quote_provider
-from finance_core.risk import compute_risk_metrics
+from finance_core.reconciliation import reconcile_ledger_vs_alpaca
+from finance_core.risk import build_risk_snapshot, compute_risk_metrics, stress_book_pnl_impact
+from finance_core.signal_alpaca_bridge import forward_pending_strategy_signals
 from finance_core.types import OrderKind, OrderSide
 from mcp.server.fastmcp import FastMCP
 
@@ -52,6 +65,26 @@ def get_strategy_engine():
     return _strategy_engine
 
 
+def _agent_mcp_gate(agent_id: int | None, tool: str) -> dict | None:
+    """Enforce allowed_mcp_tools when agent_id is set (None = full access)."""
+    if agent_id is None:
+        return None
+    mgr = AgentManager(get_ledger().conn)
+    ag = mgr.get(int(agent_id))
+    if ag is None:
+        return {"error": "unknown agent_id", "agent_id": agent_id}
+    if ag.allowed_mcp_tools is None:
+        return None
+    if tool not in ag.allowed_mcp_tools:
+        return {
+            "error": "mcp_tool_not_allowed",
+            "agent_id": agent_id,
+            "tool": tool,
+            "allowed": ag.allowed_mcp_tools,
+        }
+    return None
+
+
 @mcp.tool()
 def get_state() -> dict:
     """Current cash, positions with P&L, trading_enabled, and policy rules."""
@@ -76,6 +109,8 @@ def get_state() -> dict:
         "max_order_notional": pr.max_order_notional,
         "fee_bps": pr.fee_bps,
         "slippage_bps": pr.slippage_bps,
+        "slippage_impact_bps_per_million": pr.slippage_impact_bps_per_million,
+        "max_gross_exposure_multiple": pr.max_gross_exposure_multiple,
     }
 
 
@@ -86,6 +121,9 @@ def place_order(
     agent_id: int | None = None,
 ) -> dict:
     """Place a paper order. Idempotent on client_order_id."""
+    blocked = _agent_mcp_gate(agent_id, "place_order")
+    if blocked:
+        return blocked
     ledger = get_ledger()
     s = OrderSide(side.strip().upper())
     k = OrderKind(order_kind.strip().upper())
@@ -99,8 +137,11 @@ def place_order(
 
 
 @mcp.tool()
-def cancel_order(order_id: int) -> dict:
+def cancel_order(order_id: int, agent_id: int | None = None) -> dict:
     """Cancel a PENDING limit order by order id."""
+    blocked = _agent_mcp_gate(agent_id, "cancel_order")
+    if blocked:
+        return blocked
     return get_ledger().cancel_order(int(order_id), actor="mcp")
 
 
@@ -165,17 +206,113 @@ def get_risk_metrics() -> dict:
 
 
 @mcp.tool()
-def register_agent(
-    name: str, budget: float, allowed_symbols: str = "",
+def get_risk_snapshot() -> dict:
+    """Unified risk: metrics, gross exposure vs equity, and policy caps."""
+    lg = get_ledger()
+    return build_risk_snapshot(lg.conn, lg)
+
+
+@mcp.tool()
+def stress_portfolio(shocks_json: str) -> dict:
+    """JSON map symbol -> fractional shock, e.g. {\"AAPL\":-0.1} for -10% on marks."""
+    shocks = json.loads(shocks_json)
+    if not isinstance(shocks, dict):
+        return {"error": "shocks_json must be a JSON object"}
+    fshocks = {str(k): float(v) for k, v in shocks.items()}
+    return stress_book_pnl_impact(get_ledger(), fshocks)
+
+
+@mcp.tool()
+def reconcile_ledger_vs_broker() -> dict:
+    """Compare SQLite positions to Alpaca when quotes are Alpaca-backed."""
+    return reconcile_ledger_vs_alpaca(get_ledger())
+
+
+@mcp.tool()
+def forward_strategy_signals_to_alpaca(
+    max_rows: int = 25,
+    max_qty: float = 5.0,
+    agent_id: int | None = None,
 ) -> dict:
-    """Register a named agent with budget and optional symbol restrictions (comma-separated)."""
+    """Forward unforwarded LONG signals as paper market orders (requires env + keys)."""
+    blocked = _agent_mcp_gate(agent_id, "forward_strategy_signals_to_alpaca")
+    if blocked:
+        return blocked
+    if os.environ.get("SIGNALS_TO_ALPACA", "").lower() not in ("1", "true", "yes"):
+        return {"error": "disabled", "hint": "set SIGNALS_TO_ALPACA=1"}
+    from finance_core.broker.alpaca_executor import AlpacaOrderExecutor
+
+    try:
+        exe = AlpacaOrderExecutor()
+    except Exception as exc:
+        return {"error": str(exc)}
+    return forward_pending_strategy_signals(
+        get_ledger().conn, exe,
+        max_rows=min(int(max_rows), 100), max_qty=float(max_qty),
+    )
+
+
+@mcp.tool()
+def create_pending_order_intent(
+    client_order_id: str,
+    symbol: str,
+    side: str,
+    quantity: float,
+    order_kind: str = "MARKET",
+    limit_price: float | None = None,
+    agent_id: int | None = None,
+) -> dict:
+    """Queue an order for human approval (see approve_pending_order_intent)."""
+    return create_intent_row(
+        get_ledger().conn,
+        client_order_id=client_order_id,
+        symbol=symbol,
+        side=side,
+        quantity=float(quantity),
+        order_kind=order_kind,
+        limit_price=limit_price,
+        agent_id=int(agent_id) if agent_id is not None else None,
+        actor="mcp",
+    )
+
+
+@mcp.tool()
+def list_pending_order_intents(limit: int = 50) -> dict:
+    """Human-in-the-loop: pending intents awaiting approval."""
+    return {
+        "intents": list_intents_pending_core(
+            get_ledger().conn, limit=min(int(limit), 200),
+        ),
+    }
+
+
+@mcp.tool()
+def approve_pending_order_intent(intent_id: int) -> dict:
+    """Execute a pending intent via the ledger (requires human/agent workflow)."""
+    return submit_approved_intent(get_ledger(), int(intent_id), actor="mcp")
+
+
+@mcp.tool()
+def register_agent(
+    name: str,
+    budget: float,
+    allowed_symbols: str = "",
+    allowed_mcp_tools_json: str = "",
+) -> dict:
+    """Register agent; symbols comma-separated; allowed_mcp_tools_json is a JSON array or empty."""
     syms = (
         [s.strip().upper() for s in allowed_symbols.split(",") if s.strip()]
         if allowed_symbols
         else None
     )
+    tools: list[str] | None = None
+    if allowed_mcp_tools_json.strip():
+        raw = json.loads(allowed_mcp_tools_json)
+        tools = [str(x) for x in raw] if isinstance(raw, list) else None
     mgr = AgentManager(get_ledger().conn)
-    agent = mgr.register(name, float(budget), allowed_symbols=syms)
+    agent = mgr.register(
+        name, float(budget), allowed_symbols=syms, allowed_mcp_tools=tools,
+    )
     return agent.to_dict()
 
 
@@ -215,8 +352,11 @@ def set_quant_strategy_active(strategy_name: str, active: bool) -> dict:
 
 
 @mcp.tool()
-def run_quant_strategies_once() -> dict:
+def run_quant_strategies_once(agent_id: int | None = None) -> dict:
     """Run all active strategies once; persist signals to DB. Returns signal dicts."""
+    blocked = _agent_mcp_gate(agent_id, "run_quant_strategies_once")
+    if blocked:
+        return blocked
     signals = get_strategy_engine().run_once()
     return {
         "count": len(signals),
@@ -257,15 +397,21 @@ def get_strategy_diagnostics(strategy_name: str) -> dict:
 
 
 @mcp.tool()
-def start_quant_engine() -> dict:
+def start_quant_engine(agent_id: int | None = None) -> dict:
     """Start the background strategy engine loop (parity with POST /api/strategies/start-engine)."""
+    blocked = _agent_mcp_gate(agent_id, "start_quant_engine")
+    if blocked:
+        return blocked
     get_strategy_engine().start()
     return {"status": "running"}
 
 
 @mcp.tool()
-def stop_quant_engine() -> dict:
+def stop_quant_engine(agent_id: int | None = None) -> dict:
     """Stop the background strategy engine loop."""
+    blocked = _agent_mcp_gate(agent_id, "stop_quant_engine")
+    if blocked:
+        return blocked
     get_strategy_engine().stop()
     return {"status": "stopped"}
 
@@ -316,7 +462,6 @@ def run_backtest_scenario(
     rules_json: str = "[]",
 ) -> dict:
     """Run a backtest with synthetic prices. rules_json is a JSON array of rule objects."""
-    import json
     rules = json.loads(rules_json)
     config = BacktestConfig.from_dict({
         "name": name, "initial_cash": initial_cash,

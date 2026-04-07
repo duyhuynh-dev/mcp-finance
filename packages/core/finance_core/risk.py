@@ -7,6 +7,8 @@ import sqlite3
 from dataclasses import dataclass, field
 from typing import Any
 
+from finance_core.risk_budget import build_risk_budget_section
+
 
 @dataclass
 class RiskMetrics:
@@ -192,3 +194,57 @@ def _corr(xs: list[float], ys: list[float]) -> float:
     if sx < 1e-12 or sy < 1e-12:
         return 0.0
     return round(cov / (sx * sy), 4)
+
+
+def build_risk_snapshot(conn: sqlite3.Connection, ledger: Any) -> dict[str, Any]:
+    """Single payload: historical risk metrics + live book + policy caps."""
+    metrics = compute_risk_metrics(conn).to_dict()
+    ps = ledger.portfolio_state()
+    rules = ledger.policy_engine.rules
+    eq = ledger.estimated_equity()
+    gross = sum(abs(p.market_value) for p in ps.positions.values())
+    return {
+        "metrics": metrics,
+        "estimated_equity": round(eq, 2),
+        "gross_position_notional": round(gross, 2),
+        "gross_exposure_multiple": (
+            round(gross / eq, 4) if eq > 1e-9 else None
+        ),
+        "policy": {
+            "max_gross_exposure_multiple": rules.max_gross_exposure_multiple,
+            "max_order_notional": rules.max_order_notional,
+            "max_shares_per_symbol": rules.max_shares_per_symbol,
+            "slippage_bps": rules.slippage_bps,
+            "slippage_impact_bps_per_million": (
+                rules.slippage_impact_bps_per_million
+            ),
+            "max_portfolio_var_95_pct_of_equity": (
+                rules.max_portfolio_var_95_pct_of_equity
+            ),
+            "max_portfolio_cvar_95_pct_of_equity": (
+                rules.max_portfolio_cvar_95_pct_of_equity
+            ),
+        },
+        "budget": build_risk_budget_section(conn, rules),
+        "position_count": len(ps.positions),
+    }
+
+
+def stress_book_pnl_impact(
+    ledger: Any, shocks: dict[str, float],
+) -> dict[str, Any]:
+    """
+    Linear P&L shock: each symbol moves by fraction (e.g. -0.1 => -10% on mark).
+    """
+    d = 0.0
+    ps = ledger.portfolio_state()
+    for sym, pos in ps.positions.items():
+        pct = float(shocks.get(sym, shocks.get(sym.upper(), 0.0)))
+        d += pos.quantity * pos.mark_price * pct
+    eq = ledger.estimated_equity()
+    return {
+        "delta_equity_approx": round(d, 2),
+        "hypothetical_equity_approx": round(eq + d, 2),
+        "current_equity": round(eq, 2),
+        "symbols_stressed": sorted(shocks.keys()),
+    }

@@ -20,6 +20,7 @@ class Agent:
     allowed_symbols: list[str]
     is_active: bool
     created_at: str
+    allowed_mcp_tools: list[str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -30,6 +31,7 @@ class Agent:
             "allowed_symbols": self.allowed_symbols,
             "is_active": self.is_active,
             "created_at": self.created_at,
+            "allowed_mcp_tools": self.allowed_mcp_tools,
         }
 
 
@@ -73,17 +75,22 @@ class AgentManager:
         budget: float,
         max_order_notional: float = 50_000.0,
         allowed_symbols: list[str] | None = None,
+        allowed_mcp_tools: list[str] | None = None,
     ) -> Agent:
         ts = utc_now().isoformat()
         syms_json = json.dumps(allowed_symbols or [])
+        tools_json = (
+            json.dumps(allowed_mcp_tools) if allowed_mcp_tools is not None else None
+        )
         with transaction(self._conn):
             cur = self._conn.execute(
                 """
                 INSERT INTO agents (name, budget, max_order_notional,
-                                    allowed_symbols_json, is_active, created_at)
-                VALUES (?, ?, ?, ?, 1, ?)
+                                    allowed_symbols_json, allowed_mcp_tools_json,
+                                    is_active, created_at)
+                VALUES (?, ?, ?, ?, ?, 1, ?)
                 """,
-                (name, budget, max_order_notional, syms_json, ts),
+                (name, budget, max_order_notional, syms_json, tools_json, ts),
             )
             return Agent(
                 id=int(cur.lastrowid),
@@ -93,6 +100,7 @@ class AgentManager:
                 allowed_symbols=allowed_symbols or [],
                 is_active=True,
                 created_at=ts,
+                allowed_mcp_tools=allowed_mcp_tools,
             )
 
     def get(self, agent_id: int) -> Agent | None:
@@ -212,6 +220,11 @@ class AgentManager:
 def _row_to_agent(row: sqlite3.Row) -> Agent:
     syms_raw = row["allowed_symbols_json"]
     syms = json.loads(syms_raw) if syms_raw else []
+    tools: list[str] | None = None
+    keys = row.keys()
+    if "allowed_mcp_tools_json" in keys and row["allowed_mcp_tools_json"]:
+        raw = json.loads(row["allowed_mcp_tools_json"])
+        tools = [str(x) for x in raw] if isinstance(raw, list) else None
     return Agent(
         id=int(row["id"]),
         name=row["name"],
@@ -220,4 +233,5 @@ def _row_to_agent(row: sqlite3.Row) -> Agent:
         allowed_symbols=syms,
         is_active=bool(row["is_active"]),
         created_at=row["created_at"],
+        allowed_mcp_tools=tools,
     )

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import time
@@ -41,14 +42,34 @@ from finance_core.auth import (
 from finance_core.backtest import BacktestConfig, run_backtest
 from finance_core.broadcast import event_bus
 from finance_core.events import event_timeline, max_event_id, replay_to_event
+from finance_core.execution_events import list_execution_events, replay_summary
 from finance_core.ledger import Ledger, reset_demo_db
 from finance_core.observability import generate_request_id, metrics
+from finance_core.order_intents import (
+    approve_order_intent,
+    create_order_intent,
+    list_pending_intents,
+    reject_order_intent,
+)
 from finance_core.policy import PolicyEngine, PolicyRules
+from finance_core.pre_trade_risk import (
+    clamp_quantity_for_gross_exposure,
+    gross_notional,
+    projected_gross_after_order,
+)
 from finance_core.quote_factory import create_quote_provider
 from finance_core.ratelimit import rate_limiter
-from finance_core.risk import compute_risk_metrics
+from finance_core.reconciliation import reconcile_ledger_vs_alpaca
+from finance_core.request_context import request_id_ctx
+from finance_core.risk import (
+    build_risk_snapshot,
+    compute_risk_metrics,
+    stress_book_pnl_impact,
+)
+from finance_core.risk_budget import build_risk_budget_section, check_var_cvar_budget
+from finance_core.signal_alpaca_bridge import forward_pending_strategy_signals
 from finance_core.simulator import PriceSimulator
-from finance_core.types import OrderKind, OrderSide
+from finance_core.types import OrderKind, OrderSide, OrderStatus
 from pydantic import BaseModel, Field
 
 logging.basicConfig(
@@ -68,6 +89,18 @@ _simulator: PriceSimulator | None = None
 _strategy_engine = None
 
 SIMULATE_PRICES = os.environ.get("SIMULATE_PRICES", "1").lower() in ("1", "true", "yes")
+EQUITY_SNAPSHOT_INTERVAL_SECONDS = float(
+    os.environ.get("EQUITY_SNAPSHOT_INTERVAL_SECONDS", "15")
+)
+
+def _float_env(name: str, default: float = 0.0) -> float:
+    v = os.environ.get(name)
+    if v is None or v == "":
+        return default
+    try:
+        return float(v)
+    except ValueError:
+        return default
 
 
 def get_ledger() -> Ledger:
@@ -76,7 +109,27 @@ def get_ledger() -> Ledger:
         path = os.environ.get("FINANCE_DB_PATH", DEFAULT_DB)
         quotes = create_quote_provider()
         _ledger = Ledger.open(path, quotes=quotes)
-        _ledger.set_policy(PolicyEngine(PolicyRules.default()))
+        rules = PolicyRules.default()
+        rules = PolicyRules(
+            version=rules.version,
+            max_shares_per_symbol=rules.max_shares_per_symbol,
+            max_order_notional=rules.max_order_notional,
+            fee_bps=rules.fee_bps,
+            slippage_bps=rules.slippage_bps,
+            slippage_impact_bps_per_million=rules.slippage_impact_bps_per_million,
+            max_daily_order_count=rules.max_daily_order_count,
+            max_portfolio_concentration_pct=rules.max_portfolio_concentration_pct,
+            max_gross_exposure_multiple=rules.max_gross_exposure_multiple,
+            max_portfolio_var_95_pct_of_equity=_float_env(
+                "RISK_MAX_VAR_95_PCT_OF_EQUITY",
+                rules.max_portfolio_var_95_pct_of_equity,
+            ),
+            max_portfolio_cvar_95_pct_of_equity=_float_env(
+                "RISK_MAX_CVAR_95_PCT_OF_EQUITY",
+                rules.max_portfolio_cvar_95_pct_of_equity,
+            ),
+        )
+        _ledger.set_policy(PolicyEngine(rules))
 
         from finance_core.market import MockQuoteProvider
 
@@ -109,7 +162,28 @@ def get_strategy_engine():
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    yield
+    async def _equity_snapshot_loop() -> None:
+        if EQUITY_SNAPSHOT_INTERVAL_SECONDS <= 0:
+            return
+        # Small delay so startup is fully initialized.
+        await asyncio.sleep(0.2)
+        while True:
+            try:
+                lg = get_ledger()
+                lg.snapshot_equity()
+            except Exception:
+                # best-effort; don't crash the server
+                pass
+            await asyncio.sleep(EQUITY_SNAPSHOT_INTERVAL_SECONDS)
+
+    snapshot_task = asyncio.create_task(_equity_snapshot_loop())
+    try:
+        yield
+    finally:
+        snapshot_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await snapshot_task
+
     global _simulator, _strategy_engine
     if _simulator:
         _simulator.stop()
@@ -145,8 +219,11 @@ async def observability_middleware(request: Request, call_next):
     request_id = generate_request_id()
     request.state.request_id = request_id
     start = time.monotonic()
-
-    response: Response = await call_next(request)
+    token = request_id_ctx.set(request_id)
+    try:
+        response: Response = await call_next(request)
+    finally:
+        request_id_ctx.reset(token)
 
     latency_ms = round((time.monotonic() - start) * 1000, 2)
     response.headers["X-Request-Id"] = request_id
@@ -250,6 +327,17 @@ def health() -> Any:
     except Exception:
         pass
 
+    if os.environ.get("HEALTH_CHECK_ALPACA", "").lower() in ("1", "true", "yes"):
+        try:
+            from finance_core.broker.alpaca_executor import AlpacaOrderExecutor
+
+            info = AlpacaOrderExecutor().get_account_info()
+            body["alpaca"] = "ok" if info.get("connected") else "degraded"
+            body["alpaca_detail"] = {k: v for k, v in info.items() if k != "error"}
+        except Exception as exc:
+            body["alpaca"] = "error"
+            body["alpaca_error"] = str(exc)[:200]
+
     if body["status"] != "ok":
         return JSONResponse(status_code=503, content=body)
     return body
@@ -287,8 +375,16 @@ def portfolio(lg: Annotated[Ledger, Depends(get_ledger)]) -> dict:
             "max_shares_per_symbol": pr.max_shares_per_symbol,
             "max_order_notional": pr.max_order_notional,
             "fee_bps": pr.fee_bps, "slippage_bps": pr.slippage_bps,
+            "slippage_impact_bps_per_million": pr.slippage_impact_bps_per_million,
+            "max_gross_exposure_multiple": pr.max_gross_exposure_multiple,
             "max_daily_order_count": pr.max_daily_order_count,
             "max_portfolio_concentration_pct": pr.max_portfolio_concentration_pct,
+            "max_portfolio_var_95_pct_of_equity": (
+                pr.max_portfolio_var_95_pct_of_equity
+            ),
+            "max_portfolio_cvar_95_pct_of_equity": (
+                pr.max_portfolio_cvar_95_pct_of_equity
+            ),
         },
     }
 
@@ -338,6 +434,25 @@ def equity_series(lg: Annotated[Ledger, Depends(get_ledger)], limit: int = 200) 
 @app.get("/api/audit")
 def audit(lg: Annotated[Ledger, Depends(get_ledger)], limit: int = 80, offset: int = 0) -> dict:
     return {"events": list_audit(lg.conn, limit=min(limit, 200), offset=offset)}
+
+
+@app.get("/api/execution-events")
+def execution_events(
+    lg: Annotated[Ledger, Depends(get_ledger)], limit: int = 100, offset: int = 0,
+) -> dict:
+    return {
+        "events": list_execution_events(
+            lg.conn, limit=min(limit, 500), offset=max(offset, 0),
+        ),
+    }
+
+
+@app.get("/api/execution-events/replay")
+def execution_replay(
+    lg: Annotated[Ledger, Depends(get_ledger)],
+    to_event_id: int | None = None,
+) -> dict:
+    return replay_summary(lg.conn, to_event_id=to_event_id)
 
 
 @app.get("/api/quotes")
@@ -402,6 +517,54 @@ def place_order_endpoint(
     _require_permission(request, "trade")
     s = OrderSide(body.side.strip().upper())
     k = OrderKind(body.order_kind.strip().upper())
+    broker_exec = os.environ.get("BROKER_EXECUTION_MODE", "").lower() in (
+        "alpaca",
+        "alpaca_paper",
+    )
+    if broker_exec:
+        from finance_core.broker.alpaca_executor import AlpacaOrderExecutor
+
+        try:
+            ex = AlpacaOrderExecutor()
+            er = ex.submit_order(
+                body.symbol,
+                s.value,
+                body.quantity,
+                order_type="limit" if k == OrderKind.LIMIT else "market",
+                limit_price=body.limit_price,
+            )
+        except Exception as exc:
+            return {
+                "success": False,
+                "status": "REJECTED",
+                "message": f"broker_submit_failed: {exc}",
+            }
+
+        status = OrderStatus.PENDING
+        if er.fill_quantity >= body.quantity - 1e-9:
+            status = OrderStatus.FILLED
+        elif er.fill_quantity > 1e-9:
+            status = OrderStatus.PARTIAL
+
+        mirrored = lg.mirror_broker_execution(
+            client_order_id=body.client_order_id.strip(),
+            symbol=body.symbol,
+            side=s,
+            quantity=body.quantity,
+            status=status,
+            fill_price=er.fill_price if er.fill_quantity > 0 else None,
+            filled_quantity=er.fill_quantity,
+            broker_order_id=er.broker_order_id,
+            actor="dashboard_broker",
+            order_kind=k,
+            limit_price=body.limit_price,
+            agent_id=body.agent_id,
+            fees=er.fees,
+        ).to_audit_dict()
+        mirrored["broker_mode"] = "alpaca_paper"
+        mirrored["broker_order_id"] = er.broker_order_id
+        return mirrored
+
     r = lg.place_order(
         body.client_order_id.strip(), body.symbol, s, body.quantity,
         order_kind=k, limit_price=body.limit_price,
@@ -448,6 +611,211 @@ def risk_metrics(lg: Annotated[Ledger, Depends(get_ledger)]) -> dict:
     return compute_risk_metrics(lg.conn).to_dict()
 
 
+@app.get("/api/risk/snapshot")
+def risk_snapshot(lg: Annotated[Ledger, Depends(get_ledger)]) -> dict:
+    return build_risk_snapshot(lg.conn, lg)
+
+
+@app.get("/api/risk/budget")
+def risk_budget(lg: Annotated[Ledger, Depends(get_ledger)]) -> dict:
+    return build_risk_budget_section(lg.conn, lg.policy_engine.rules)
+
+
+class StressBody(BaseModel):
+    shocks: dict[str, float] = Field(default_factory=dict)
+
+
+class RiskWhatIfBody(BaseModel):
+    symbol: str
+    side: str
+    quantity: float = Field(gt=0)
+    order_kind: str = "MARKET"
+    limit_price: float | None = None
+
+
+@app.post("/api/risk/what-if")
+def risk_what_if(
+    request: Request, lg: Annotated[Ledger, Depends(get_ledger)], body: RiskWhatIfBody,
+) -> dict:
+    _require_permission(request, "trade")
+    sym = body.symbol.strip().upper()
+    side = OrderSide(body.side.strip().upper())
+    order_kind = OrderKind(body.order_kind.strip().upper())
+    if order_kind == OrderKind.LIMIT and (body.limit_price is None or body.limit_price <= 0):
+        return {"allowed": False, "reason": "INVALID_LIMIT_PRICE"}
+    if not lg.get_trading_enabled():
+        return {"allowed": False, "reason": "TRADING_DISABLED"}
+    try:
+        quote = lg.quotes.get_quote(sym)
+        mark = quote.price
+    except ValueError:
+        return {"allowed": False, "reason": "UNKNOWN_SYMBOL"}
+
+    policy_price = body.limit_price if order_kind == OrderKind.LIMIT else mark
+    assert policy_price is not None
+    state = lg.portfolio_state()
+    equity = lg.estimated_equity()
+    pos_now = lg.position_quantity(sym)
+    pos_after = pos_now + body.quantity if side == OrderSide.BUY else pos_now - body.quantity
+    pr = lg.policy_engine.check(
+        symbol=sym,
+        side=side,
+        quantity=body.quantity,
+        price=float(policy_price),
+        state=state,
+        position_after=pos_after,
+        daily_order_count=lg._daily_order_count(),
+        equity=equity,
+    )
+    if not pr.allowed and pr.reason:
+        return {"allowed": False, "reason": pr.reason.value}
+
+    q_adj, rpre = clamp_quantity_for_gross_exposure(
+        rules=lg.policy_engine.rules,
+        equity=equity,
+        positions=state.positions,
+        symbol=sym,
+        side=side,
+        quantity=body.quantity,
+        price=float(policy_price),
+    )
+    if rpre is not None:
+        return {"allowed": False, "reason": rpre.value}
+
+    rb = check_var_cvar_budget(
+        lg.conn,
+        lg.policy_engine.rules,
+        state.positions,
+        sym,
+        side,
+        q_adj,
+        float(policy_price),
+    )
+    if rb is not None:
+        return {"allowed": False, "reason": rb.value}
+
+    gross_now = gross_notional(state.positions)
+    gross_after = projected_gross_after_order(
+        positions=state.positions,
+        symbol=sym,
+        side=side,
+        quantity=q_adj,
+        price=float(policy_price),
+    )
+    gross_multiple_after = (gross_after / equity) if equity > 1e-9 else None
+    notional = q_adj * float(policy_price)
+    est_fill = lg._apply_slippage(mark, side, q_adj * mark)
+    est_fee = lg._fee_amount(notional)
+    return {
+        "allowed": True,
+        "reason": None,
+        "symbol": sym,
+        "side": side.value,
+        "order_kind": order_kind.value,
+        "requested_quantity": body.quantity,
+        "adjusted_quantity": q_adj,
+        "would_resize": q_adj + 1e-9 < body.quantity,
+        "estimated_mark_price": round(mark, 6),
+        "estimated_fill_price": round(est_fill, 6),
+        "projected_notional": round(notional, 2),
+        "estimated_fee": round(est_fee, 6),
+        "projected_gross_notional_before": round(gross_now, 2),
+        "projected_gross_notional_after": round(gross_after, 2),
+        "projected_gross_multiple_after": (
+            round(gross_multiple_after, 4) if gross_multiple_after is not None else None
+        ),
+        "risk_budget": build_risk_budget_section(lg.conn, lg.policy_engine.rules),
+    }
+
+
+@app.post("/api/risk/stress")
+def risk_stress(
+    request: Request, lg: Annotated[Ledger, Depends(get_ledger)], body: StressBody,
+) -> dict:
+    _require_permission(request, "trade")
+    return stress_book_pnl_impact(lg, body.shocks)
+
+
+@app.get("/api/broker/reconciliation")
+def broker_reconciliation(
+    request: Request, lg: Annotated[Ledger, Depends(get_ledger)],
+) -> dict:
+    _require_permission(request, "trade")
+    return reconcile_ledger_vs_alpaca(lg)
+
+
+class OrderIntentCreateBody(BaseModel):
+    client_order_id: str
+    symbol: str
+    side: str
+    quantity: float = Field(gt=0)
+    order_kind: str = "MARKET"
+    limit_price: float | None = None
+    agent_id: int | None = None
+
+
+@app.post("/api/order-intents")
+def create_order_intent_endpoint(
+    request: Request, lg: Annotated[Ledger, Depends(get_ledger)], body: OrderIntentCreateBody,
+) -> dict:
+    _require_permission(request, "trade")
+    return create_order_intent(
+        lg.conn,
+        client_order_id=body.client_order_id,
+        symbol=body.symbol,
+        side=body.side,
+        quantity=body.quantity,
+        order_kind=body.order_kind,
+        limit_price=body.limit_price,
+        agent_id=body.agent_id,
+        actor="dashboard",
+    )
+
+
+@app.get("/api/order-intents/pending")
+def list_order_intents_pending(
+    request: Request, lg: Annotated[Ledger, Depends(get_ledger)], limit: int = 50,
+) -> dict:
+    _require_permission(request, "trade")
+    return {"intents": list_pending_intents(lg.conn, limit=min(limit, 200))}
+
+
+@app.post("/api/order-intents/{intent_id}/approve")
+def approve_order_intent_endpoint(
+    request: Request, lg: Annotated[Ledger, Depends(get_ledger)], intent_id: int,
+) -> dict:
+    _require_permission(request, "manage_agents")
+    return approve_order_intent(lg, intent_id, actor="dashboard")
+
+
+@app.post("/api/order-intents/{intent_id}/reject")
+def reject_order_intent_endpoint(
+    request: Request, lg: Annotated[Ledger, Depends(get_ledger)], intent_id: int,
+) -> dict:
+    _require_permission(request, "manage_agents")
+    return reject_order_intent(lg.conn, intent_id)
+
+
+@app.post("/api/strategies/forward-signals-alpaca")
+def forward_signals_alpaca_endpoint(
+    request: Request, lg: Annotated[Ledger, Depends(get_ledger)],
+    max_rows: int = 25,
+    max_qty: float = 5.0,
+) -> dict:
+    _require_permission(request, "manage_agents")
+    if os.environ.get("SIGNALS_TO_ALPACA", "").lower() not in ("1", "true", "yes"):
+        return {"error": "disabled", "hint": "set SIGNALS_TO_ALPACA=1"}
+    from finance_core.broker.alpaca_executor import AlpacaOrderExecutor
+
+    try:
+        exe = AlpacaOrderExecutor()
+    except Exception as exc:
+        return {"error": str(exc)}
+    return forward_pending_strategy_signals(
+        lg.conn, exe, max_rows=min(max_rows, 100), max_qty=max_qty,
+    )
+
+
 # ── agents ───────────────────────────────────────────────────
 
 class RegisterAgentBody(BaseModel):
@@ -455,6 +823,7 @@ class RegisterAgentBody(BaseModel):
     budget: float = Field(gt=0)
     max_order_notional: float = 50_000.0
     allowed_symbols: list[str] | None = None
+    allowed_mcp_tools: list[str] | None = None
 
 
 @app.post("/api/agents")
@@ -464,7 +833,11 @@ def register_agent(
     _require_permission(request, "manage_agents")
     mgr = AgentManager(lg.conn)
     return mgr.register(
-        body.name, body.budget, body.max_order_notional, body.allowed_symbols,
+        body.name,
+        body.budget,
+        body.max_order_notional,
+        body.allowed_symbols,
+        allowed_mcp_tools=body.allowed_mcp_tools,
     ).to_dict()
 
 
@@ -660,6 +1033,9 @@ def evaluate_alerts(lg: Annotated[Ledger, Depends(get_ledger)]) -> dict:
         positions=positions_value,
         realized_pnl=state.total_realized_pnl,
         max_drawdown_pct=risk.max_drawdown_pct,
+        risk_budget_max_utilization=build_risk_budget_section(
+            lg.conn, lg.policy_engine.rules,
+        ).get("max_utilization"),
     )
     return {"fired": [n.to_dict() for n in fired]}
 

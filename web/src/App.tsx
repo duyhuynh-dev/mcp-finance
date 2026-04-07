@@ -25,6 +25,7 @@ import OrderEntryForm from './components/OrderEntryForm'
 import OrdersTable from './components/OrdersTable'
 import PositionsTable from './components/PositionsTable'
 import ReplaySlider from './components/ReplaySlider'
+import ReconciliationPanel from './components/ReconciliationPanel'
 import RiskPanel from './components/RiskPanel'
 import SignalFeed from './components/SignalFeed'
 import StatCard from './components/StatCard'
@@ -32,6 +33,7 @@ import StrategyDashboard from './components/StrategyDashboard'
 import StrategyPlayground from './components/StrategyPlayground'
 import BrokerStatus from './components/BrokerStatus'
 import ApiDisconnected from './components/ApiDisconnected'
+import OrderIntentsPanel from './components/OrderIntentsPanel'
 
 const SYMBOLS = ['AAPL', 'MSFT', 'GOOGL', 'SPY', 'NVDA', 'AMZN', 'META', 'TSLA', 'QQQ', 'AMD']
 
@@ -174,6 +176,7 @@ export default function App() {
             {activeTab === 'trading' && (
               <div className="space-y-6 animate-fade-in-up">
                 <RiskPanel />
+                <ReconciliationPanel />
                 <div className="grid gap-5 lg:grid-cols-2">
                   <PositionsTable positions={p?.positions} isLoading={portfolio.isLoading} />
                   <OrdersTable orders={orders.data?.orders} isLoading={orders.isLoading} />
@@ -204,6 +207,7 @@ export default function App() {
             {activeTab === 'agents' && (
               <div className="space-y-6 animate-fade-in-up">
                 <AgentPanel />
+                <OrderIntentsPanel />
                 <AlertsPanel />
               </div>
             )}

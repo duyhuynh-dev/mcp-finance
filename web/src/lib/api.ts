@@ -2,7 +2,6 @@ import {
   useMutation,
   useQuery,
   useQueryClient,
-  type Query,
 } from '@tanstack/react-query'
 import { useEffect, useRef } from 'react'
 import type {
@@ -20,10 +19,14 @@ import type {
   Fill,
   MetricsData,
   Order,
+  OrderIntent,
   Portfolio,
   QuoteData,
+  ReconciliationResult,
   ReplayState,
   RiskMetrics,
+  RiskSnapshot,
+  RiskWhatIfResult,
   StrategyInfo,
   StrategySignal,
   SweepResult,
@@ -93,6 +96,26 @@ export function useRisk() {
     queryKey: ['risk'],
     queryFn: () => request<RiskMetrics>('/api/risk'),
     staleTime: 5_000,
+  })
+}
+
+export function useRiskSnapshot() {
+  return useQuery({
+    queryKey: ['risk-snapshot'],
+    queryFn: () => request<RiskSnapshot>('/api/risk/snapshot'),
+    staleTime: 5_000,
+  })
+}
+
+export function useRiskWhatIf() {
+  return useMutation({
+    mutationFn: (body: {
+      symbol: string
+      side: string
+      quantity: number
+      order_kind?: string
+      limit_price?: number | null
+    }) => request<RiskWhatIfResult>('/api/risk/what-if', { method: 'POST', body: JSON.stringify(body) }),
   })
 }
 
@@ -185,9 +208,53 @@ export function usePlaceOrder() {
 export function useRegisterAgent() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (body: { name: string; budget: number; allowed_symbols?: string[] }) =>
+    mutationFn: (body: {
+      name: string
+      budget: number
+      allowed_symbols?: string[]
+      allowed_mcp_tools?: string[] | null
+    }) =>
       request('/api/agents', { method: 'POST', body: JSON.stringify(body) }),
     onSuccess: () => qc.invalidateQueries(),
+  })
+}
+
+export function useBrokerReconciliation() {
+  return useQuery({
+    queryKey: ['broker-reconciliation'],
+    queryFn: () => request<ReconciliationResult>('/api/broker/reconciliation'),
+    staleTime: 5_000,
+  })
+}
+
+export function usePendingOrderIntents(limit = 100) {
+  return useQuery({
+    queryKey: ['order-intents-pending'],
+    queryFn: () => request<{ intents: OrderIntent[] }>(`/api/order-intents/pending?limit=${limit}`),
+    staleTime: 3_000,
+  })
+}
+
+export function useApproveOrderIntent() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (intentId: number) =>
+      request(`/api/order-intents/${intentId}/approve`, { method: 'POST' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['order-intents-pending'] })
+      qc.invalidateQueries({ queryKey: ['orders'] })
+      qc.invalidateQueries({ queryKey: ['fills'] })
+      qc.invalidateQueries({ queryKey: ['portfolio'] })
+    },
+  })
+}
+
+export function useRejectOrderIntent() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (intentId: number) =>
+      request(`/api/order-intents/${intentId}/reject`, { method: 'POST' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['order-intents-pending'] }),
   })
 }
 
@@ -203,8 +270,7 @@ export function useMetrics() {
     queryKey: ['metrics'],
     queryFn: () => request<MetricsData>('/api/metrics'),
     staleTime: 5_000,
-    refetchInterval: (q: Query) =>
-      q.state.status === 'success' ? 10_000 : false,
+    refetchInterval: (q) => (q.state.status === 'success' ? 10_000 : false),
   })
 }
 
@@ -392,6 +458,7 @@ const LIVE_KEYS = [
   'portfolio', 'orders', 'fills', 'equity', 'audit', 'risk',
   'agents', 'event-timeline', 'alert-notifications', 'backtest-history',
   'strategies', 'strategy-signals', 'broker-status',
+  'broker-reconciliation', 'order-intents-pending', 'risk-snapshot',
 ]
 
 export function useWebSocket() {

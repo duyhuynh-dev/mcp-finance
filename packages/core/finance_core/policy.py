@@ -15,8 +15,13 @@ class PolicyRules:
     max_order_notional: float
     fee_bps: float = 0.0
     slippage_bps: float = 0.0
+    slippage_impact_bps_per_million: float = 0.0
     max_daily_order_count: int = 0
     max_portfolio_concentration_pct: float = 0.0
+    max_gross_exposure_multiple: float = 0.0
+    # Historical equity-curve VaR(95)/CVaR(95) as fraction of equity; 0 = off.
+    max_portfolio_var_95_pct_of_equity: float = 0.0
+    max_portfolio_cvar_95_pct_of_equity: float = 0.0
 
     @staticmethod
     def default() -> PolicyRules:
@@ -26,8 +31,12 @@ class PolicyRules:
             max_order_notional=50_000.0,
             fee_bps=0.0,
             slippage_bps=0.0,
+            slippage_impact_bps_per_million=0.0,
             max_daily_order_count=0,
             max_portfolio_concentration_pct=0.0,
+            max_gross_exposure_multiple=0.0,
+            max_portfolio_var_95_pct_of_equity=0.0,
+            max_portfolio_cvar_95_pct_of_equity=0.0,
         )
 
 
@@ -44,9 +53,21 @@ def load_rules_from_dict(data: dict[str, Any]) -> PolicyRules:
         max_order_notional=float(data["max_order_notional"]),
         fee_bps=float(data.get("fee_bps", 0.0)),
         slippage_bps=float(data.get("slippage_bps", 0.0)),
+        slippage_impact_bps_per_million=float(
+            data.get("slippage_impact_bps_per_million", 0.0)
+        ),
         max_daily_order_count=int(data.get("max_daily_order_count", 0)),
         max_portfolio_concentration_pct=float(
             data.get("max_portfolio_concentration_pct", 0.0)
+        ),
+        max_gross_exposure_multiple=float(
+            data.get("max_gross_exposure_multiple", 0.0)
+        ),
+        max_portfolio_var_95_pct_of_equity=float(
+            data.get("max_portfolio_var_95_pct_of_equity", 0.0)
+        ),
+        max_portfolio_cvar_95_pct_of_equity=float(
+            data.get("max_portfolio_cvar_95_pct_of_equity", 0.0)
         ),
     )
 

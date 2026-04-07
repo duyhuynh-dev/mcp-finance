@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS agents (
   budget REAL NOT NULL DEFAULT 0,
   max_order_notional REAL NOT NULL DEFAULT 50000,
   allowed_symbols_json TEXT,
+  allowed_mcp_tools_json TEXT,
   is_active INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL
 );
@@ -108,7 +109,8 @@ CREATE TABLE IF NOT EXISTS strategy_signals (
   direction TEXT NOT NULL,
   strength REAL NOT NULL,
   metadata_json TEXT,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  broker_forwarded INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS strategy_configs (
@@ -126,6 +128,13 @@ CREATE TABLE IF NOT EXISTS price_history (
   price REAL NOT NULL,
   volume REAL,
   recorded_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS execution_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  payload_json TEXT NOT NULL
 );
 """
 
@@ -169,6 +178,48 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
     if "realized_pnl" not in fcols:
         conn.execute(
             "ALTER TABLE fills ADD COLUMN realized_pnl REAL NOT NULL DEFAULT 0"
+        )
+    acols = _table_columns(conn, "agents")
+    if "allowed_mcp_tools_json" not in acols:
+        conn.execute(
+            "ALTER TABLE agents ADD COLUMN allowed_mcp_tools_json TEXT"
+        )
+    if _table_exists(conn, "strategy_signals"):
+        scols = _table_columns(conn, "strategy_signals")
+        if "broker_forwarded" not in scols:
+            conn.execute(
+                "ALTER TABLE strategy_signals ADD COLUMN broker_forwarded "
+                "INTEGER NOT NULL DEFAULT 0"
+            )
+    if not _table_exists(conn, "order_intents"):
+        conn.executescript(
+            """
+            CREATE TABLE order_intents (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              client_order_id TEXT UNIQUE NOT NULL,
+              symbol TEXT NOT NULL,
+              side TEXT NOT NULL,
+              quantity REAL NOT NULL,
+              order_kind TEXT NOT NULL DEFAULT 'MARKET',
+              limit_price REAL,
+              agent_id INTEGER,
+              actor TEXT NOT NULL,
+              status TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              resolved_at TEXT
+            );
+            """
+        )
+    if not _table_exists(conn, "execution_events"):
+        conn.executescript(
+            """
+            CREATE TABLE execution_events (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              ts TEXT NOT NULL,
+              event_type TEXT NOT NULL,
+              payload_json TEXT NOT NULL
+            );
+            """
         )
     conn.commit()
 
