@@ -1,5 +1,15 @@
 import { useMemo, useState } from 'react'
-import { fmt, pct, useCreateSimulationScenario, useDeleteSimulationScenario, useRunSimulation, useSimulationScenarios } from '../lib/api'
+import {
+  fmt,
+  pct,
+  useCompareSimulation,
+  useCreateSimulationScenario,
+  useDeleteSimulationScenario,
+  usePromoteSimulation,
+  useRunSimulation,
+  useSimulationScenarioVersions,
+  useSimulationScenarios,
+} from '../lib/api'
 
 type Leg = {
   symbol: string
@@ -13,6 +23,8 @@ export default function ScenarioStudio() {
   const createScenario = useCreateSimulationScenario()
   const deleteScenario = useDeleteSimulationScenario()
   const runSimulation = useRunSimulation()
+  const compareSimulation = useCompareSimulation()
+  const promoteSimulation = usePromoteSimulation()
 
   const [name, setName] = useState('my_scenario')
   const [description, setDescription] = useState('')
@@ -20,6 +32,10 @@ export default function ScenarioStudio() {
     { symbol: 'AAPL', side: 'BUY', quantity: 10, order_kind: 'MARKET' },
     { symbol: 'MSFT', side: 'SELL', quantity: 5, order_kind: 'MARKET' },
   ])
+  const [baselineId, setBaselineId] = useState<number | null>(null)
+  const [candidateId, setCandidateId] = useState<number | null>(null)
+  const [historyScenarioId, setHistoryScenarioId] = useState<number | null>(null)
+  const versionsQ = useSimulationScenarioVersions(historyScenarioId)
 
   const scenarios = data?.scenarios ?? []
   const topReasons = useMemo(
@@ -89,6 +105,9 @@ export default function ScenarioStudio() {
                   <div className="flex items-center gap-2">
                     <p className="font-mono text-xs text-zinc-200">{s.name}</p>
                     <span className="text-[10px] text-zinc-600">{s.legs.length} legs</span>
+                    <span className="text-[10px] text-zinc-600">r{s.current_revision ?? 1}</span>
+                    <span className="text-[10px] text-zinc-600">{s.version_count ?? 1}v</span>
+                    <button className="rounded-md border border-zinc-700/60 px-2 py-0.5 text-[10px] text-zinc-300 hover:text-sky-300" onClick={() => setHistoryScenarioId(s.id)}>History</button>
                     <button className="ml-auto rounded-md border border-zinc-700/60 px-2 py-0.5 text-[10px] text-zinc-400 hover:text-rose-300" onClick={() => deleteScenario.mutate(s.id)}>Delete</button>
                     <button className="rounded-md border border-zinc-700/60 px-2 py-0.5 text-[10px] text-zinc-300 hover:text-emerald-300" onClick={() => runSimulation.mutate({ scenario_id: s.id })}>Run</button>
                   </div>
@@ -114,6 +133,68 @@ export default function ScenarioStudio() {
             </div>
           )}
         </div>
+      </div>
+
+      <div className="mt-4 rounded-xl border border-zinc-800/30 bg-zinc-900/30 p-4">
+        <p className="mb-2 font-display text-[10px] font-bold uppercase tracking-[0.15em] text-zinc-500">Baseline vs candidate</p>
+        <div className="grid gap-2 md:grid-cols-4">
+          <select className="glass-input rounded-lg px-2 py-1.5 text-sm" value={baselineId ?? ''} onChange={(e) => setBaselineId(e.target.value ? Number(e.target.value) : null)}>
+            <option value="">Baseline scenario</option>
+            {scenarios.map((s) => <option key={`b-${s.id}`} value={s.id}>{s.name}</option>)}
+          </select>
+          <select className="glass-input rounded-lg px-2 py-1.5 text-sm" value={candidateId ?? ''} onChange={(e) => setCandidateId(e.target.value ? Number(e.target.value) : null)}>
+            <option value="">Candidate scenario</option>
+            {scenarios.map((s) => <option key={`c-${s.id}`} value={s.id}>{s.name}</option>)}
+          </select>
+          <button
+            className="rounded-lg border border-sky-500/50 bg-sky-500/10 px-3 py-1.5 text-xs text-sky-300"
+            onClick={() => baselineId && candidateId && compareSimulation.mutate({ baseline_scenario_id: baselineId, candidate_scenario_id: candidateId })}
+            disabled={compareSimulation.isPending || !baselineId || !candidateId || baselineId === candidateId}
+          >
+            {compareSimulation.isPending ? 'Comparing…' : 'Compare'}
+          </button>
+        </div>
+        {compareSimulation.data && (
+          <div className="mt-3 grid gap-2 text-xs text-zinc-300 md:grid-cols-3">
+            <p>Acceptance Δ: <span className={`font-mono ${compareSimulation.data.delta.acceptance_rate >= 0 ? 'text-emerald-300' : 'text-rose-300'}`}>{pct(compareSimulation.data.delta.acceptance_rate)}</span></p>
+            <p>Allowed notional Δ: <span className={`font-mono ${compareSimulation.data.delta.projected_notional_allowed >= 0 ? 'text-emerald-300' : 'text-rose-300'}`}>{fmt(compareSimulation.data.delta.projected_notional_allowed)}</span></p>
+            <p>Rejected legs Δ: <span className={`font-mono ${compareSimulation.data.delta.rejected <= 0 ? 'text-emerald-300' : 'text-rose-300'}`}>{compareSimulation.data.delta.rejected}</span></p>
+          </div>
+        )}
+        {compareSimulation.data && baselineId && candidateId && (
+          <div className="mt-3">
+            <button
+              className="rounded-lg border border-amber-500/50 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-300"
+              onClick={() =>
+                promoteSimulation.mutate({
+                  baseline_scenario_id: baselineId,
+                  candidate_scenario_id: candidateId,
+                  note: 'promoted from compare panel',
+                })
+              }
+              disabled={promoteSimulation.isPending}
+            >
+              {promoteSimulation.isPending ? 'Promoting…' : 'Promote candidate -> baseline'}
+            </button>
+          </div>
+        )}
+      </div>
+
+      <div className="mt-4 rounded-xl border border-zinc-800/30 bg-zinc-900/30 p-4">
+        <p className="mb-2 font-display text-[10px] font-bold uppercase tracking-[0.15em] text-zinc-500">Version history</p>
+        {!historyScenarioId ? (
+          <p className="text-sm text-zinc-500">Pick a scenario and click History.</p>
+        ) : versionsQ.isLoading ? (
+          <p className="text-sm text-zinc-500">Loading versions…</p>
+        ) : (
+          <div className="space-y-1 text-xs text-zinc-300">
+            {(versionsQ.data?.versions ?? []).map((v) => (
+              <p key={v.id} className="font-mono">
+                r{v.revision} · {v.legs.length} legs · {v.note || 'no note'} · {v.created_at}
+              </p>
+            ))}
+          </div>
+        )}
       </div>
     </section>
   )

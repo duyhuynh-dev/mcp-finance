@@ -737,6 +737,7 @@ class SimulationScenarioCreateBody(BaseModel):
     name: str
     description: str = ""
     legs: list[RiskWhatIfBody]
+    note: str = ""
 
 
 @app.get("/api/sim/scenarios")
@@ -745,19 +746,26 @@ def list_sim_scenarios(
 ) -> dict:
     _require_permission(request, "trade")
     rows = lg.conn.execute(
-        "SELECT id, name, description, scenario_json, created_at "
+        "SELECT id, name, description, scenario_json, created_at, updated_at, current_revision "
         "FROM simulation_scenarios ORDER BY id DESC LIMIT ?",
         (min(limit, 200),),
     ).fetchall()
     out: list[dict[str, Any]] = []
     for r in rows:
         payload = json.loads(str(r["scenario_json"]))
+        vrow = lg.conn.execute(
+            "SELECT COUNT(*) AS c FROM simulation_scenario_versions WHERE scenario_id = ?",
+            (int(r["id"]),),
+        ).fetchone()
         out.append({
             "id": int(r["id"]),
             "name": r["name"],
             "description": r["description"] or "",
             "legs": payload.get("legs", []),
             "created_at": r["created_at"],
+            "updated_at": r["updated_at"] or r["created_at"],
+            "current_revision": int(r["current_revision"] or 1),
+            "version_count": int(vrow["c"]) if vrow else 1,
         })
     return {"scenarios": out}
 
@@ -775,13 +783,65 @@ def create_sim_scenario(
     payload = json.dumps({
         "legs": [leg.model_dump() for leg in body.legs],
     })
-    cur = lg.conn.execute(
-        "INSERT INTO simulation_scenarios (name, description, scenario_json, created_at) "
-        "VALUES (?, ?, ?, ?)",
-        (body.name.strip(), body.description.strip(), payload, ts),
+    name = body.name.strip()
+    row = lg.conn.execute(
+        "SELECT id, current_revision FROM simulation_scenarios WHERE name = ?",
+        (name,),
+    ).fetchone()
+    if row is None:
+        cur = lg.conn.execute(
+            "INSERT INTO simulation_scenarios "
+            "(name, description, scenario_json, created_at, updated_at, current_revision) "
+            "VALUES (?, ?, ?, ?, ?, 1)",
+            (name, body.description.strip(), payload, ts, ts),
+        )
+        scenario_id = int(cur.lastrowid)
+        revision = 1
+    else:
+        scenario_id = int(row["id"])
+        revision = int(row["current_revision"]) + 1
+        lg.conn.execute(
+            "UPDATE simulation_scenarios "
+            "SET description = ?, scenario_json = ?, updated_at = ?, current_revision = ? "
+            "WHERE id = ?",
+            (body.description.strip(), payload, ts, revision, scenario_id),
+        )
+    lg.conn.execute(
+        "INSERT OR REPLACE INTO simulation_scenario_versions "
+        "(scenario_id, revision, scenario_json, note, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (scenario_id, revision, payload, body.note.strip(), ts),
     )
     lg.conn.commit()
-    return {"id": int(cur.lastrowid), "name": body.name.strip(), "created_at": ts}
+    return {
+        "id": scenario_id,
+        "name": name,
+        "created_at": ts,
+        "revision": revision,
+    }
+
+
+@app.get("/api/sim/scenarios/{scenario_id}/versions")
+def list_sim_scenario_versions(
+    request: Request, lg: Annotated[Ledger, Depends(get_ledger)], scenario_id: int,
+) -> dict:
+    _require_permission(request, "trade")
+    rows = lg.conn.execute(
+        "SELECT id, revision, scenario_json, note, created_at "
+        "FROM simulation_scenario_versions WHERE scenario_id = ? ORDER BY revision DESC",
+        (scenario_id,),
+    ).fetchall()
+    versions: list[dict[str, Any]] = []
+    for r in rows:
+        payload = json.loads(str(r["scenario_json"]))
+        versions.append({
+            "id": int(r["id"]),
+            "revision": int(r["revision"]),
+            "legs": payload.get("legs", []),
+            "note": r["note"] or "",
+            "created_at": r["created_at"],
+        })
+    return {"versions": versions}
 
 
 @app.delete("/api/sim/scenarios/{scenario_id}")
@@ -799,29 +859,28 @@ class SimulationRunBody(BaseModel):
     legs: list[RiskWhatIfBody] = Field(default_factory=list)
 
 
-@app.post("/api/sim/run")
-def run_simulation(
-    request: Request, lg: Annotated[Ledger, Depends(get_ledger)], body: SimulationRunBody,
-) -> dict:
-    _require_permission(request, "trade")
-    legs: list[RiskWhatIfBody] = []
-    scenario_name: str | None = None
-    if body.scenario_id is not None:
-        row = lg.conn.execute(
-            "SELECT name, scenario_json FROM simulation_scenarios WHERE id = ?",
-            (body.scenario_id,),
-        ).fetchone()
-        if row is None:
-            raise HTTPException(status_code=404, detail="scenario not found")
-        scenario_name = str(row["name"])
-        payload = json.loads(str(row["scenario_json"]))
-        legs = [RiskWhatIfBody(**x) for x in payload.get("legs", [])]
-    elif body.legs:
-        legs = body.legs
-    else:
-        raise HTTPException(status_code=400, detail="scenario_id or legs required")
+def _load_scenario_legs(conn: Any, scenario_id: int) -> tuple[str, list[RiskWhatIfBody]]:
+    row = conn.execute(
+        "SELECT name, scenario_json, current_revision FROM simulation_scenarios WHERE id = ?",
+        (scenario_id,),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="scenario not found")
+    scenario_name = str(row["name"])
+    vrow = conn.execute(
+        "SELECT scenario_json FROM simulation_scenario_versions "
+        "WHERE scenario_id = ? AND revision = ?",
+        (scenario_id, int(row["current_revision"] or 1)),
+    ).fetchone()
+    payload = (
+        json.loads(str(vrow["scenario_json"]))
+        if vrow else json.loads(str(row["scenario_json"]))
+    )
+    legs = [RiskWhatIfBody(**x) for x in payload.get("legs", [])]
+    return scenario_name, legs
 
-    results = [_evaluate_risk_what_if(lg, leg) for leg in legs]
+
+def _summarize_sim_results(results: list[dict[str, Any]]) -> dict[str, Any]:
     allowed = [r for r in results if r.get("allowed")]
     rejected = [r for r in results if not r.get("allowed")]
     reason_counts: dict[str, int] = {}
@@ -830,20 +889,121 @@ def run_simulation(
         reason_counts[rs] = reason_counts.get(rs, 0) + 1
     top_reasons = sorted(reason_counts.items(), key=lambda x: x[1], reverse=True)
     return {
+        "legs": len(results),
+        "allowed": len(allowed),
+        "rejected": len(rejected),
+        "acceptance_rate": round(len(allowed) / len(results), 4) if results else 0.0,
+        "projected_notional_allowed": round(
+            sum(float(r.get("projected_notional") or 0.0) for r in allowed), 2,
+        ),
+        "top_rejection_reasons": [
+            {"reason": k, "count": v} for k, v in top_reasons[:5]
+        ],
+    }
+
+
+@app.post("/api/sim/run")
+def run_simulation(
+    request: Request, lg: Annotated[Ledger, Depends(get_ledger)], body: SimulationRunBody,
+) -> dict:
+    _require_permission(request, "trade")
+    legs: list[RiskWhatIfBody] = []
+    scenario_name: str | None = None
+    if body.scenario_id is not None:
+        scenario_name, legs = _load_scenario_legs(lg.conn, body.scenario_id)
+    elif body.legs:
+        legs = body.legs
+    else:
+        raise HTTPException(status_code=400, detail="scenario_id or legs required")
+
+    results = [_evaluate_risk_what_if(lg, leg) for leg in legs]
+    return {
         "scenario_name": scenario_name,
-        "summary": {
-            "legs": len(results),
-            "allowed": len(allowed),
-            "rejected": len(rejected),
-            "acceptance_rate": round(len(allowed) / len(results), 4) if results else 0.0,
-            "projected_notional_allowed": round(
-                sum(float(r.get("projected_notional") or 0.0) for r in allowed), 2,
-            ),
-            "top_rejection_reasons": [
-                {"reason": k, "count": v} for k, v in top_reasons[:5]
-            ],
-        },
+        "summary": _summarize_sim_results(results),
         "results": results,
+    }
+
+
+class SimulationCompareBody(BaseModel):
+    baseline_scenario_id: int
+    candidate_scenario_id: int
+
+
+@app.post("/api/sim/compare")
+def compare_simulations(
+    request: Request, lg: Annotated[Ledger, Depends(get_ledger)], body: SimulationCompareBody,
+) -> dict:
+    _require_permission(request, "trade")
+    baseline_name, baseline_legs = _load_scenario_legs(lg.conn, body.baseline_scenario_id)
+    candidate_name, candidate_legs = _load_scenario_legs(lg.conn, body.candidate_scenario_id)
+    base_results = [_evaluate_risk_what_if(lg, leg) for leg in baseline_legs]
+    cand_results = [_evaluate_risk_what_if(lg, leg) for leg in candidate_legs]
+    base_summary = _summarize_sim_results(base_results)
+    cand_summary = _summarize_sim_results(cand_results)
+    return {
+        "baseline": {
+            "id": body.baseline_scenario_id,
+            "name": baseline_name,
+            "summary": base_summary,
+        },
+        "candidate": {
+            "id": body.candidate_scenario_id,
+            "name": candidate_name,
+            "summary": cand_summary,
+        },
+        "delta": {
+            "acceptance_rate": round(
+                float(cand_summary["acceptance_rate"]) - float(base_summary["acceptance_rate"]),
+                4,
+            ),
+            "projected_notional_allowed": round(
+                float(cand_summary["projected_notional_allowed"])
+                - float(base_summary["projected_notional_allowed"]),
+                2,
+            ),
+            "rejected": int(cand_summary["rejected"]) - int(base_summary["rejected"]),
+        },
+    }
+
+
+class SimulationPromoteBody(BaseModel):
+    baseline_scenario_id: int
+    candidate_scenario_id: int
+    note: str = "promoted from candidate"
+
+
+@app.post("/api/sim/promote")
+def promote_simulation_candidate(
+    request: Request, lg: Annotated[Ledger, Depends(get_ledger)], body: SimulationPromoteBody,
+) -> dict:
+    _require_permission(request, "trade")
+    _, candidate_legs = _load_scenario_legs(lg.conn, body.candidate_scenario_id)
+    b_row = lg.conn.execute(
+        "SELECT id, name, description, current_revision FROM simulation_scenarios WHERE id = ?",
+        (body.baseline_scenario_id,),
+    ).fetchone()
+    if b_row is None:
+        raise HTTPException(status_code=404, detail="baseline scenario not found")
+    ts = utc_now().isoformat()
+    revision = int(b_row["current_revision"] or 1) + 1
+    payload = json.dumps({"legs": [leg.model_dump() for leg in candidate_legs]})
+    lg.conn.execute(
+        "UPDATE simulation_scenarios "
+        "SET scenario_json = ?, updated_at = ?, current_revision = ? WHERE id = ?",
+        (payload, ts, revision, body.baseline_scenario_id),
+    )
+    lg.conn.execute(
+        "INSERT INTO simulation_scenario_versions "
+        "(scenario_id, revision, scenario_json, note, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (body.baseline_scenario_id, revision, payload, body.note, ts),
+    )
+    lg.conn.commit()
+    return {
+        "ok": True,
+        "baseline_scenario_id": body.baseline_scenario_id,
+        "baseline_name": b_row["name"],
+        "new_revision": revision,
     }
 
 

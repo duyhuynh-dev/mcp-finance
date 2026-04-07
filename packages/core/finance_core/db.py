@@ -142,7 +142,19 @@ CREATE TABLE IF NOT EXISTS simulation_scenarios (
   name TEXT UNIQUE NOT NULL,
   description TEXT,
   scenario_json TEXT NOT NULL,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  current_revision INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS simulation_scenario_versions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  scenario_id INTEGER NOT NULL REFERENCES simulation_scenarios(id) ON DELETE CASCADE,
+  revision INTEGER NOT NULL,
+  scenario_json TEXT NOT NULL,
+  note TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE(scenario_id, revision)
 );
 """
 
@@ -237,8 +249,47 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
               name TEXT UNIQUE NOT NULL,
               description TEXT,
               scenario_json TEXT NOT NULL,
-              created_at TEXT NOT NULL
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              current_revision INTEGER NOT NULL DEFAULT 1
             );
+            """
+        )
+    scols = _table_columns(conn, "simulation_scenarios")
+    if "updated_at" not in scols:
+        conn.execute(
+            "ALTER TABLE simulation_scenarios ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''"
+        )
+        conn.execute(
+            "UPDATE simulation_scenarios SET updated_at = created_at "
+            "WHERE updated_at = '' OR updated_at IS NULL"
+        )
+    if "current_revision" not in scols:
+        conn.execute(
+            "ALTER TABLE simulation_scenarios "
+            "ADD COLUMN current_revision INTEGER NOT NULL DEFAULT 1"
+        )
+    if not _table_exists(conn, "simulation_scenario_versions"):
+        conn.executescript(
+            """
+            CREATE TABLE simulation_scenario_versions (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              scenario_id INTEGER NOT NULL REFERENCES simulation_scenarios(id) ON DELETE CASCADE,
+              revision INTEGER NOT NULL,
+              scenario_json TEXT NOT NULL,
+              note TEXT,
+              created_at TEXT NOT NULL,
+              UNIQUE(scenario_id, revision)
+            );
+            """
+        )
+    if _table_exists(conn, "simulation_scenario_versions"):
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO simulation_scenario_versions
+            (scenario_id, revision, scenario_json, note, created_at)
+            SELECT id, 1, scenario_json, 'initial import', created_at
+            FROM simulation_scenarios
             """
         )
     conn.commit()

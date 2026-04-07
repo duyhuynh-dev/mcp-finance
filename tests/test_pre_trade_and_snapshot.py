@@ -236,3 +236,90 @@ def test_simulation_scenario_crud_and_run(client: TestClient) -> None:
     dl = client.delete(f"/api/sim/scenarios/{sid}")
     assert dl.status_code == 200
     assert dl.json().get("ok") is True
+
+
+def test_simulation_compare(client: TestClient) -> None:
+    client.post("/api/deposit", json={"amount": 25_000.0})
+    a = client.post(
+        "/api/sim/scenarios",
+        json={
+            "name": "cmp-a",
+            "legs": [{"symbol": "AAPL", "side": "BUY", "quantity": 5.0}],
+        },
+    )
+    b = client.post(
+        "/api/sim/scenarios",
+        json={
+            "name": "cmp-b",
+            "legs": [
+                {"symbol": "AAPL", "side": "BUY", "quantity": 5.0},
+                {"symbol": "AAPL", "side": "SELL", "quantity": 2.0},
+            ],
+        },
+    )
+    assert a.status_code == 200 and b.status_code == 200
+    ra = int(a.json()["id"])
+    rb = int(b.json()["id"])
+    cp = client.post(
+        "/api/sim/compare",
+        json={"baseline_scenario_id": ra, "candidate_scenario_id": rb},
+    )
+    assert cp.status_code == 200
+    body = cp.json()
+    assert "baseline" in body and "candidate" in body and "delta" in body
+    assert body["baseline"]["id"] == ra
+    assert body["candidate"]["id"] == rb
+
+
+def test_simulation_versioning_and_promote(client: TestClient) -> None:
+    client.post("/api/deposit", json={"amount": 25_000.0})
+    base = client.post(
+        "/api/sim/scenarios",
+        json={
+            "name": "vbase",
+            "description": "baseline",
+            "legs": [{"symbol": "AAPL", "side": "BUY", "quantity": 5.0}],
+            "note": "initial",
+        },
+    )
+    cand = client.post(
+        "/api/sim/scenarios",
+        json={
+            "name": "vcand",
+            "description": "candidate",
+            "legs": [{"symbol": "AAPL", "side": "SELL", "quantity": 3.0}],
+            "note": "candidate",
+        },
+    )
+    assert base.status_code == 200 and cand.status_code == 200
+    bid = int(base.json()["id"])
+    cid = int(cand.json()["id"])
+
+    upd = client.post(
+        "/api/sim/scenarios",
+        json={
+            "name": "vbase",
+            "description": "baseline v2",
+            "legs": [{"symbol": "AAPL", "side": "BUY", "quantity": 6.0}],
+            "note": "v2",
+        },
+    )
+    assert upd.status_code == 200
+    assert int(upd.json()["revision"]) >= 2
+
+    vs = client.get(f"/api/sim/scenarios/{bid}/versions")
+    assert vs.status_code == 200
+    versions = vs.json()["versions"]
+    assert len(versions) >= 2
+
+    pr = client.post(
+        "/api/sim/promote",
+        json={"baseline_scenario_id": bid, "candidate_scenario_id": cid},
+    )
+    assert pr.status_code == 200
+    assert pr.json()["ok"] is True
+
+    run = client.post("/api/sim/run", json={"scenario_id": bid})
+    assert run.status_code == 200
+    legs = run.json()["results"]
+    assert legs and legs[0]["side"] == "SELL"

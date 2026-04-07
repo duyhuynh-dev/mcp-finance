@@ -170,6 +170,9 @@ export interface SimulationScenario {
     limit_price?: number | null
   }>
   created_at: string
+  updated_at?: string
+  current_revision?: number
+  version_count?: number
 }
 
 export interface SimulationRunResult {
@@ -183,6 +186,38 @@ export interface SimulationRunResult {
     top_rejection_reasons: Array<{ reason: string; count: number }>
   }
   results: RiskWhatIfResult[]
+}
+
+export interface SimulationCompareResult {
+  baseline: {
+    id: number
+    name: string
+    summary: SimulationRunResult['summary']
+  }
+  candidate: {
+    id: number
+    name: string
+    summary: SimulationRunResult['summary']
+  }
+  delta: {
+    acceptance_rate: number
+    projected_notional_allowed: number
+    rejected: number
+  }
+}
+
+export interface SimulationScenarioVersion {
+  id: number
+  revision: number
+  legs: Array<{
+    symbol: string
+    side: string
+    quantity: number
+    order_kind?: string
+    limit_price?: number | null
+  }>
+  note: string
+  created_at: string
 }
 
 export interface ReconciliationResult {

@@ -31,6 +31,8 @@ import type {
   StrategySignal,
   SimulationRunResult,
   SimulationScenario,
+  SimulationCompareResult,
+  SimulationScenarioVersion,
   SweepResult,
 } from './types'
 
@@ -135,6 +137,7 @@ export function useCreateSimulationScenario() {
     mutationFn: (body: {
       name: string
       description?: string
+      note?: string
       legs: Array<{
         symbol: string
         side: string
@@ -168,6 +171,38 @@ export function useRunSimulation() {
         limit_price?: number | null
       }>
     }) => request<SimulationRunResult>('/api/sim/run', { method: 'POST', body: JSON.stringify(body) }),
+  })
+}
+
+export function useCompareSimulation() {
+  return useMutation({
+    mutationFn: (body: { baseline_scenario_id: number; candidate_scenario_id: number }) =>
+      request<SimulationCompareResult>('/api/sim/compare', { method: 'POST', body: JSON.stringify(body) }),
+  })
+}
+
+export function useSimulationScenarioVersions(scenarioId: number | null) {
+  return useQuery({
+    queryKey: ['sim-scenario-versions', scenarioId],
+    queryFn: () =>
+      request<{ versions: SimulationScenarioVersion[] }>(`/api/sim/scenarios/${scenarioId}/versions`),
+    enabled: scenarioId != null,
+    staleTime: STALE,
+  })
+}
+
+export function usePromoteSimulation() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: {
+      baseline_scenario_id: number
+      candidate_scenario_id: number
+      note?: string
+    }) => request('/api/sim/promote', { method: 'POST', body: JSON.stringify(body) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['sim-scenarios'] })
+      qc.invalidateQueries({ queryKey: ['sim-scenario-versions'] })
+    },
   })
 }
 
