@@ -11,6 +11,14 @@ function tryParse(s: string | null): unknown {
   }
 }
 
+function displayActor(actor: string) {
+  if (!actor) return 'System'
+  if (actor === 'human' || actor === 'dashboard') return 'Human'
+  if (actor === 'agent') return 'Agent'
+  if (actor === 'system') return 'System'
+  return actor
+}
+
 export default function AuditTimeline({
   events,
   isLoading,
@@ -51,7 +59,7 @@ export default function AuditTimeline({
                     <span className="shrink-0 rounded-lg bg-indigo-500/10 border border-indigo-500/20 px-1.5 py-0.5 font-mono text-[10px] font-bold text-indigo-400">
                       {e.action}
                     </span>
-                    <span className="text-zinc-500">{e.actor}</span>
+                    <span className="text-zinc-500">{displayActor(e.actor)}</span>
                     <span className="ml-auto shrink-0 font-mono text-[11px] text-zinc-600">
                       {new Date(e.ts).toLocaleTimeString()}
                     </span>
@@ -60,7 +68,7 @@ export default function AuditTimeline({
                   {isOpen && (
                     <div className="mt-1.5 ml-2 space-y-1.5 rounded-lg bg-zinc-950/40 p-3">
                       <div>
-                        <span className="text-[11px] text-zinc-600">payload </span>
+                        <span className="text-[11px] text-zinc-600">details </span>
                         <pre className="inline whitespace-pre-wrap break-all font-mono text-[11px] text-zinc-400">
                           {JSON.stringify(tryParse(e.payload_json), null, 2)}
                         </pre>

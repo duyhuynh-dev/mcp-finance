@@ -6,6 +6,7 @@ import {
 import { useEffect, useRef } from 'react'
 import type {
   AgentData,
+  AgentAction,
   AgentStats,
   AlertNotification,
   AlertRule,
@@ -13,6 +14,10 @@ import type {
   AuditEvent,
   BacktestResult,
   BacktestRun,
+  CausalChain,
+  CausalCounterfactual,
+  CausalEvent,
+  CausalReplaySummary,
   BrokerStatusData,
   EquityPoint,
   ExecutionPlanData,
@@ -24,6 +29,8 @@ import type {
   Portfolio,
   QuoteData,
   ReconciliationResult,
+  ResearchRunDetail,
+  ResearchRunSummary,
   ReplayState,
   RiskMetrics,
   RiskSnapshot,
@@ -35,6 +42,8 @@ import type {
   SimulationCompareResult,
   SimulationScenarioVersion,
   SweepResult,
+  VenueOrder,
+  VenueStatus,
 } from './types'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -120,6 +129,8 @@ export function useRiskWhatIf() {
       quantity: number
       order_kind?: string
       limit_price?: number | null
+      agent_id?: number | null
+      tool?: string
     }) => request<RiskWhatIfResult>('/api/risk/what-if', { method: 'POST', body: JSON.stringify(body) }),
   })
 }
@@ -323,6 +334,34 @@ export function usePendingOrderIntents(limit = 100) {
   })
 }
 
+export function useRecentAgentActions(limit = 50) {
+  return useQuery({
+    queryKey: ['agent-actions-recent'],
+    queryFn: () => request<{ actions: AgentAction[] }>(`/api/agent-actions/recent?limit=${limit}`),
+    staleTime: 3_000,
+  })
+}
+
+export function useCreateAgentOrderIntent() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: {
+      client_order_id: string
+      symbol: string
+      side: string
+      quantity: number
+      order_kind: string
+      limit_price?: number | null
+      agent_id: number
+    }) => request('/api/agent-actions/order-intent', { method: 'POST', body: JSON.stringify(body) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['order-intents-pending'] })
+      qc.invalidateQueries({ queryKey: ['agent-actions-recent'] })
+      qc.invalidateQueries({ queryKey: ['audit'] })
+    },
+  })
+}
+
 export function useApproveOrderIntent() {
   const qc = useQueryClient()
   return useMutation({
@@ -333,6 +372,8 @@ export function useApproveOrderIntent() {
       qc.invalidateQueries({ queryKey: ['orders'] })
       qc.invalidateQueries({ queryKey: ['fills'] })
       qc.invalidateQueries({ queryKey: ['portfolio'] })
+      qc.invalidateQueries({ queryKey: ['agent-actions-recent'] })
+      qc.invalidateQueries({ queryKey: ['audit'] })
     },
   })
 }
@@ -342,7 +383,11 @@ export function useRejectOrderIntent() {
   return useMutation({
     mutationFn: (intentId: number) =>
       request(`/api/order-intents/${intentId}/reject`, { method: 'POST' }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['order-intents-pending'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['order-intents-pending'] })
+      qc.invalidateQueries({ queryKey: ['agent-actions-recent'] })
+      qc.invalidateQueries({ queryKey: ['audit'] })
+    },
   })
 }
 
@@ -353,12 +398,151 @@ export function useRunBacktest() {
   })
 }
 
+export function useResearchRuns(limit = 20) {
+  return useQuery({
+    queryKey: ['research-runs'],
+    queryFn: () => request<{ runs: ResearchRunSummary[] }>(`/api/research/runs?limit=${limit}`),
+    staleTime: STALE,
+  })
+}
+
+export function useResearchRun(runId: number | null) {
+  return useQuery({
+    queryKey: ['research-run', runId],
+    queryFn: () => request<ResearchRunDetail>(`/api/research/runs/${runId}`),
+    enabled: runId != null,
+    staleTime: STALE,
+  })
+}
+
+export function useRunWalkForwardResearch() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: {
+      name?: string
+      strategy_name: string
+      symbols: string[]
+      total_bars: number
+      train_bars: number
+      test_bars: number
+      step_bars: number
+      seed: number
+      drift: number
+      volatility: number
+      correlation: number
+      strategy_params?: Record<string, unknown>
+    }) => request<ResearchRunDetail>('/api/research/walk-forward', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ['research-runs'] })
+      qc.setQueryData(['research-run', r.id], r)
+    },
+  })
+}
+
 export function useMetrics() {
   return useQuery({
     queryKey: ['metrics'],
     queryFn: () => request<MetricsData>('/api/metrics'),
     staleTime: 5_000,
     refetchInterval: (q) => (q.state.status === 'success' ? 10_000 : false),
+  })
+}
+
+export function useCausalEvents(limit = 80) {
+  return useQuery({
+    queryKey: ['causal-events', limit],
+    queryFn: () => request<{ events: CausalEvent[] }>(`/api/causal/events?limit=${limit}`),
+    staleTime: STALE,
+  })
+}
+
+export function useCausalChain(eventId: number | null) {
+  return useQuery({
+    queryKey: ['causal-chain', eventId],
+    queryFn: () => request<CausalChain>(`/api/causal/events/${eventId}/chain`),
+    enabled: eventId != null,
+    staleTime: STALE,
+  })
+}
+
+export function useCausalReplay(toEventId: number | null = null) {
+  const suffix = toEventId != null ? `?to_event_id=${toEventId}` : ''
+  return useQuery({
+    queryKey: ['causal-replay', toEventId],
+    queryFn: () => request<CausalReplaySummary>(`/api/causal/replay${suffix}`),
+    staleTime: STALE,
+  })
+}
+
+export function useCausalCounterfactual() {
+  return useMutation({
+    mutationFn: (body: {
+      max_order_notional?: number | null
+      max_gross_exposure_multiple?: number | null
+      require_approval_for_all_agents?: boolean
+      limit?: number
+    }) => request<CausalCounterfactual>('/api/causal/counterfactual', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  })
+}
+
+export function useVenueStatus() {
+  return useQuery({
+    queryKey: ['venue-status'],
+    queryFn: () => request<VenueStatus>('/api/venue/status'),
+    staleTime: STALE,
+  })
+}
+
+export function useVenueOrders(limit = 100) {
+  return useQuery({
+    queryKey: ['venue-orders'],
+    queryFn: () => request<{ orders: VenueOrder[] }>(`/api/venue/orders?limit=${limit}`),
+    staleTime: STALE,
+  })
+}
+
+export function useSubmitVenueOrder() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: {
+      client_order_id: string
+      symbol: string
+      side: string
+      quantity: number
+      order_type: string
+      limit_price?: number | null
+      time_in_force?: string
+      depth_per_tick?: number
+      latency_ticks?: number
+    }) => request<VenueOrder>('/api/venue/orders', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['venue-orders'] })
+      qc.invalidateQueries({ queryKey: ['venue-status'] })
+      qc.invalidateQueries({ queryKey: ['portfolio'] })
+      qc.invalidateQueries({ queryKey: ['causal-events'] })
+    },
+  })
+}
+
+export function useTickVenue() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () => request('/api/venue/tick', { method: 'POST' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['venue-orders'] })
+      qc.invalidateQueries({ queryKey: ['venue-status'] })
+      qc.invalidateQueries({ queryKey: ['portfolio'] })
+      qc.invalidateQueries({ queryKey: ['causal-events'] })
+    },
   })
 }
 
@@ -569,6 +753,7 @@ export function useWebSocket() {
     const url = `${proto}://${window.location.host}/api/ws`
     let ws: WebSocket
     let closed = false
+    let timer: ReturnType<typeof setTimeout> | null = null
 
     let attempt = 0
     function connect() {
@@ -587,16 +772,17 @@ export function useWebSocket() {
         if (closed) return
         attempt += 1
         const delay = Math.min(3_000 * 2 ** (attempt - 1), 30_000)
-        setTimeout(connect, delay)
+        timer = setTimeout(connect, delay)
       }
       ws.onerror = () => {
         ws.close()
       }
     }
 
-    connect()
+    timer = setTimeout(connect, 0)
     return () => {
       closed = true
+      if (timer) clearTimeout(timer)
       ws?.close()
     }
   }, [qc])

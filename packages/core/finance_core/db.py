@@ -156,6 +156,62 @@ CREATE TABLE IF NOT EXISTS simulation_scenario_versions (
   created_at TEXT NOT NULL,
   UNIQUE(scenario_id, revision)
 );
+
+CREATE TABLE IF NOT EXISTS research_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  strategy_name TEXT NOT NULL,
+  config_json TEXT NOT NULL,
+  report_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS causal_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  agent_id INTEGER,
+  correlation_id TEXT NOT NULL,
+  causation_id INTEGER,
+  source_table TEXT,
+  source_id INTEGER,
+  payload_json TEXT NOT NULL,
+  state_hash TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS venue_orders (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  client_order_id TEXT UNIQUE NOT NULL,
+  symbol TEXT NOT NULL,
+  side TEXT NOT NULL,
+  quantity REAL NOT NULL,
+  order_type TEXT NOT NULL,
+  limit_price REAL,
+  time_in_force TEXT NOT NULL,
+  status TEXT NOT NULL,
+  filled_quantity REAL NOT NULL DEFAULT 0,
+  avg_fill_price REAL,
+  expires_at_tick INTEGER,
+  current_tick INTEGER NOT NULL DEFAULT 0,
+  latency_ticks_remaining INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  metadata_json TEXT
+);
+
+CREATE TABLE IF NOT EXISTS venue_fills (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  venue_order_id INTEGER NOT NULL REFERENCES venue_orders(id),
+  symbol TEXT NOT NULL,
+  side TEXT NOT NULL,
+  quantity REAL NOT NULL,
+  price REAL NOT NULL,
+  spread_bps REAL NOT NULL,
+  impact_bps REAL NOT NULL,
+  tick INTEGER NOT NULL,
+  created_at TEXT NOT NULL
+);
 """
 
 
@@ -225,8 +281,33 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
               agent_id INTEGER,
               actor TEXT NOT NULL,
               status TEXT NOT NULL,
+              reason TEXT,
+              decision_json TEXT,
               created_at TEXT NOT NULL,
               resolved_at TEXT
+            );
+            """
+        )
+    else:
+        icols = _table_columns(conn, "order_intents")
+        if "reason" not in icols:
+            conn.execute("ALTER TABLE order_intents ADD COLUMN reason TEXT")
+        if "decision_json" not in icols:
+            conn.execute("ALTER TABLE order_intents ADD COLUMN decision_json TEXT")
+    if not _table_exists(conn, "agent_actions"):
+        conn.executescript(
+            """
+            CREATE TABLE agent_actions (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              ts TEXT NOT NULL,
+              agent_id INTEGER,
+              actor TEXT NOT NULL,
+              tool TEXT NOT NULL,
+              action TEXT NOT NULL,
+              decision TEXT NOT NULL,
+              reason TEXT,
+              payload_json TEXT NOT NULL,
+              result_json TEXT
             );
             """
         )
@@ -290,6 +371,74 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
             (scenario_id, revision, scenario_json, note, created_at)
             SELECT id, 1, scenario_json, 'initial import', created_at
             FROM simulation_scenarios
+            """
+        )
+    if not _table_exists(conn, "research_runs"):
+        conn.executescript(
+            """
+            CREATE TABLE research_runs (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              name TEXT NOT NULL,
+              strategy_name TEXT NOT NULL,
+              config_json TEXT NOT NULL,
+              report_json TEXT NOT NULL,
+              created_at TEXT NOT NULL
+            );
+            """
+        )
+    if not _table_exists(conn, "causal_events"):
+        conn.executescript(
+            """
+            CREATE TABLE causal_events (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              ts TEXT NOT NULL,
+              event_type TEXT NOT NULL,
+              actor TEXT NOT NULL,
+              agent_id INTEGER,
+              correlation_id TEXT NOT NULL,
+              causation_id INTEGER,
+              source_table TEXT,
+              source_id INTEGER,
+              payload_json TEXT NOT NULL,
+              state_hash TEXT NOT NULL
+            );
+            """
+        )
+    if not _table_exists(conn, "venue_orders"):
+        conn.executescript(
+            """
+            CREATE TABLE venue_orders (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              client_order_id TEXT UNIQUE NOT NULL,
+              symbol TEXT NOT NULL,
+              side TEXT NOT NULL,
+              quantity REAL NOT NULL,
+              order_type TEXT NOT NULL,
+              limit_price REAL,
+              time_in_force TEXT NOT NULL,
+              status TEXT NOT NULL,
+              filled_quantity REAL NOT NULL DEFAULT 0,
+              avg_fill_price REAL,
+              expires_at_tick INTEGER,
+              current_tick INTEGER NOT NULL DEFAULT 0,
+              latency_ticks_remaining INTEGER NOT NULL DEFAULT 0,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              metadata_json TEXT
+            );
+
+            CREATE TABLE venue_fills (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              venue_order_id INTEGER NOT NULL REFERENCES venue_orders(id),
+              symbol TEXT NOT NULL,
+              side TEXT NOT NULL,
+              quantity REAL NOT NULL,
+              price REAL NOT NULL,
+              spread_bps REAL NOT NULL,
+              impact_bps REAL NOT NULL,
+              tick INTEGER NOT NULL,
+              created_at TEXT NOT NULL
+            );
             """
         )
     conn.commit()

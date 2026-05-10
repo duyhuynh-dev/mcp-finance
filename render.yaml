@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: agent-control-plane
+    env: docker
+    plan: starter
+    autoDeploy: true
+    healthCheckPath: /api/health
+    disk:
+      name: finance-data
+      mountPath: /app/data
+      sizeGB: 1
+    envVars:
+      - key: FINANCE_DB_PATH
+        value: /app/data/finance.db
+      - key: FINANCE_QUOTE_BACKEND
+        value: mock
+      - key: SIMULATE_PRICES
+        value: "1"
+      - key: REQUIRE_AUTH
+        value: "false"
+      - key: CORS_ORIGINS
+        value: "*"
+      - key: PYTHONUNBUFFERED
+        value: "1"

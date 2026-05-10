@@ -140,8 +140,25 @@ export interface RiskSnapshot {
 }
 
 export interface RiskWhatIfResult {
+  decision?: 'ALLOW' | 'REJECT' | 'RESIZE' | 'REQUIRE_APPROVAL'
   allowed: boolean
+  requires_approval?: boolean
   reason: string | null
+  actor?: string
+  tool?: string
+  agent?: AgentData | null
+  requested_order?: {
+    symbol: string
+    side: string
+    quantity: number
+    order_kind: string
+    limit_price: number | null
+  }
+  checks?: Array<{
+    name: string
+    passed: boolean
+    detail: Record<string, unknown>
+  }>
   symbol?: string
   side?: string
   order_kind?: string
@@ -152,9 +169,13 @@ export interface RiskWhatIfResult {
   estimated_fill_price?: number
   projected_notional?: number
   estimated_fee?: number
+  current_position?: number
+  projected_position?: number
+  estimated_equity?: number
   projected_gross_notional_before?: number
   projected_gross_notional_after?: number
   projected_gross_multiple_after?: number | null
+  projected_concentration_after?: number | null
   risk_budget?: RiskSnapshot['budget']
 }
 
@@ -246,8 +267,24 @@ export interface OrderIntent {
   agent_id: number | null
   actor: string
   status: string
+  reason?: string | null
+  decision?: RiskWhatIfResult | null
   created_at: string
   resolved_at: string | null
+}
+
+export interface AgentAction {
+  id: number
+  ts: string
+  agent_id: number | null
+  agent_name: string | null
+  actor: string
+  tool: string
+  action: string
+  decision: string
+  reason: string | null
+  payload: RiskWhatIfResult
+  result: Record<string, unknown> | null
 }
 
 export interface AgentStats {
@@ -351,6 +388,69 @@ export interface BacktestRun {
   created_at: string
 }
 
+export interface ResearchMetrics {
+  bars: number
+  total_return: number
+  annualized_return: number
+  annualized_volatility: number
+  sharpe: number
+  max_drawdown: number
+  hit_rate: number
+}
+
+export interface ResearchRunSummary {
+  id: number
+  name: string
+  strategy_name: string
+  created_at: string
+  metrics: ResearchMetrics
+  benchmark: ResearchMetrics
+  diagnostics: {
+    signal_counts_by_symbol?: Record<string, number>
+    direction_counts?: Record<string, number>
+    avg_abs_exposure?: number
+    turnover?: number
+    sample_size_warning?: boolean
+  }
+  methodology: {
+    type: string
+    train_bars: number
+    test_bars: number
+    step_bars: number
+    windows: number
+    data_source: string
+    seed: number
+    note: string
+  }
+}
+
+export interface ResearchRunDetail extends ResearchRunSummary {
+  strategy: {
+    name: string
+    description: string
+    required_history: number
+    config: Record<string, unknown>
+  }
+  universe: string[]
+  excess: ResearchMetrics
+  windows: Array<{
+    index: number
+    train_start: string
+    train_end: string
+    test_start: string
+    test_end: string
+    signal_count: number
+    turnover: number
+    metrics: ResearchMetrics
+  }>
+  diagnostics: ResearchRunSummary['diagnostics'] & {
+    latest_signals?: StrategySignal[]
+  }
+  equity_curve: number[]
+  benchmark_curve: number[]
+  config: Record<string, unknown>
+}
+
 export interface StrategyInfo {
   name: string
   description: string
@@ -426,4 +526,123 @@ export interface ExecutionQualityData {
     avg_sell_price: number | null
     net_quantity: number
   }>
+}
+
+export interface CausalEvent {
+  id: number
+  ts: string
+  event_type: string
+  actor: string
+  agent_id: number | null
+  correlation_id: string
+  causation_id: number | null
+  source_table: string | null
+  source_id: number | null
+  payload: Record<string, unknown>
+  state_hash: string
+}
+
+export interface CausalChain {
+  root_event_id: number
+  correlation_id: string
+  events: CausalEvent[]
+  graph: {
+    nodes: Array<{
+      id: number
+      label: string
+      actor: string
+      agent_id: number | null
+      state_hash: string
+    }>
+    edges: Array<{ from: number; to: number; type: string }>
+  }
+  integrity: {
+    ok: boolean
+    checked_events: number
+    head_hash?: string
+    failed_event_id?: number
+  }
+}
+
+export interface CausalReplaySummary {
+  to_event_id: number | null
+  total_events: number
+  event_counts: Record<string, number>
+  agent_decisions: Record<string, number>
+  correlation_count: number
+  integrity: {
+    ok: boolean
+    checked_events: number
+    head_hash?: string
+  }
+}
+
+export interface CausalCounterfactual {
+  policy: {
+    max_order_notional: number | null
+    max_gross_exposure_multiple: number | null
+    require_approval_for_all_agents: boolean
+  }
+  events_evaluated: number
+  changed_decisions: number
+  changes: Array<{
+    event_id: number
+    ts: string
+    event_type: string
+    correlation_id: string
+    original_decision: string
+    counterfactual_decision: string
+    reasons: string[]
+    symbol?: string
+    side?: string
+    projected_notional: number
+    projected_gross_multiple_after?: number | null
+  }>
+}
+
+export interface VenueOrder {
+  id: number
+  client_order_id: string
+  symbol: string
+  side: string
+  quantity: number
+  order_type: string
+  limit_price: number | null
+  time_in_force: string
+  status: string
+  filled_quantity: number
+  remaining_quantity: number
+  avg_fill_price: number | null
+  expires_at_tick: number | null
+  current_tick: number
+  latency_ticks_remaining: number
+  created_at: string
+  updated_at: string
+  fills: Array<{
+    id: number
+    quantity: number
+    price: number
+    spread_bps: number
+    impact_bps: number
+    tick: number
+    created_at: string
+  }>
+}
+
+export interface VenueStatus {
+  mode: string
+  config: {
+    base_spread_bps: number
+    impact_bps_per_1000_shares: number
+    depth_per_tick: number
+    latency_ticks: number
+    default_tif_ticks: number
+  }
+  orders_by_status: Record<string, number>
+  fills: {
+    count: number
+    quantity: number
+    avg_spread_bps: number
+    avg_impact_bps: number
+  }
 }

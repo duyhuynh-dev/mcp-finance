@@ -13,21 +13,43 @@ if _ROOT not in sys.path:
 
 import json
 
+from finance_core.agent_actions import (
+    TradeDecision,
+    evaluate_trade_decision,
+    record_agent_action,
+)
+from finance_core.agent_actions import (
+    list_recent_agent_actions as list_recent_agent_actions_core,
+)
 from finance_core.agents import AgentManager
 from finance_core.audit import list_audit
 from finance_core.backtest import BacktestConfig, run_backtest
+from finance_core.causal import (
+    counterfactual_policy_replay,
+    get_causal_chain,
+    list_causal_events,
+    replay_causal_summary,
+    verify_causal_integrity,
+)
 from finance_core.ledger import Ledger
 from finance_core.order_intents import (
     approve_order_intent as submit_approved_intent,
 )
 from finance_core.order_intents import (
-    create_order_intent as create_intent_row,
+    create_governed_order_intent as create_intent_row,
 )
 from finance_core.order_intents import (
     list_pending_intents as list_intents_pending_core,
 )
 from finance_core.quote_factory import create_quote_provider
 from finance_core.reconciliation import reconcile_ledger_vs_alpaca
+from finance_core.research import (
+    WalkForwardConfig,
+    get_research_run,
+    list_research_runs,
+    run_walk_forward_report,
+    save_research_run,
+)
 from finance_core.risk import build_risk_snapshot, compute_risk_metrics, stress_book_pnl_impact
 from finance_core.signal_alpaca_bridge import forward_pending_strategy_signals
 from finance_core.types import OrderKind, OrderSide
@@ -128,12 +150,73 @@ def place_order(
     s = OrderSide(side.strip().upper())
     k = OrderKind(order_kind.strip().upper())
     lp = float(limit_price) if limit_price is not None else None
+    if agent_id is not None:
+        decision = evaluate_trade_decision(
+            ledger,
+            symbol=symbol,
+            side=s,
+            quantity=float(quantity),
+            order_kind=k,
+            limit_price=lp,
+            actor="mcp",
+            agent_id=int(agent_id),
+            tool="place_order",
+        )
+        if decision["decision"] == TradeDecision.REJECT.value:
+            result = {
+                "success": False,
+                "order_id": None,
+                "status": "REJECTED",
+                "rejection_reason": decision["reason"],
+                "message": "agent_governance_rejected",
+                "decision": decision,
+            }
+            record_agent_action(
+                ledger.conn,
+                actor="mcp",
+                tool="place_order",
+                action="order_rejected",
+                decision=decision,
+                result=result,
+            )
+            return result
+        if decision["decision"] == TradeDecision.REQUIRE_APPROVAL.value:
+            result = create_intent_row(
+                ledger,
+                client_order_id=client_order_id,
+                symbol=symbol,
+                side=side,
+                quantity=float(quantity),
+                order_kind=order_kind,
+                limit_price=lp,
+                agent_id=int(agent_id),
+                actor="mcp",
+                tool="place_order",
+            )
+            return {
+                "success": False,
+                "status": "PENDING_APPROVAL",
+                "message": "human_approval_required",
+                **result,
+            }
+        quantity = float(decision.get("adjusted_quantity", quantity))
     r = ledger.place_order(
         client_order_id.strip(), symbol, s, float(quantity),
         order_kind=k, limit_price=lp, actor="mcp",
         agent_id=int(agent_id) if agent_id is not None else None,
     )
-    return r.to_audit_dict()
+    out = r.to_audit_dict()
+    if agent_id is not None:
+        out["decision"] = decision
+        record_agent_action(
+            ledger.conn,
+            actor="mcp",
+            tool="place_order",
+            action="order_placed",
+            decision=decision,
+            result=out,
+        )
+    return out
 
 
 @mcp.tool()
@@ -264,7 +347,7 @@ def create_pending_order_intent(
 ) -> dict:
     """Queue an order for human approval (see approve_pending_order_intent)."""
     return create_intent_row(
-        get_ledger().conn,
+        get_ledger(),
         client_order_id=client_order_id,
         symbol=symbol,
         side=side,
@@ -273,6 +356,7 @@ def create_pending_order_intent(
         limit_price=limit_price,
         agent_id=int(agent_id) if agent_id is not None else None,
         actor="mcp",
+        tool="create_pending_order_intent",
     )
 
 
@@ -281,6 +365,16 @@ def list_pending_order_intents(limit: int = 50) -> dict:
     """Human-in-the-loop: pending intents awaiting approval."""
     return {
         "intents": list_intents_pending_core(
+            get_ledger().conn, limit=min(int(limit), 200),
+        ),
+    }
+
+
+@mcp.tool()
+def list_recent_agent_actions(limit: int = 50) -> dict:
+    """Recent governed agent proposals, executions, and rejections."""
+    return {
+        "actions": list_recent_agent_actions_core(
             get_ledger().conn, limit=min(int(limit), 200),
         ),
     }
@@ -468,6 +562,67 @@ def run_backtest_scenario(
         "steps": steps, "seed": seed, "rules": rules,
     })
     return run_backtest(config).to_dict()
+
+
+@mcp.tool()
+def run_strategy_research_report(config_json: str) -> dict:
+    """Run and persist a walk-forward research report for a built-in strategy."""
+    cfg = WalkForwardConfig.from_dict(json.loads(config_json))
+    report = run_walk_forward_report(cfg)
+    return save_research_run(get_ledger().conn, cfg, report)
+
+
+@mcp.tool()
+def list_strategy_research_reports(limit: int = 20) -> dict:
+    """List saved walk-forward research reports."""
+    return {"runs": list_research_runs(get_ledger().conn, limit=min(int(limit), 100))}
+
+
+@mcp.tool()
+def get_strategy_research_report(run_id: int) -> dict:
+    """Get one saved walk-forward research report."""
+    run = get_research_run(get_ledger().conn, int(run_id))
+    return run if run is not None else {"error": "research run not found"}
+
+
+@mcp.tool()
+def list_causal_event_log(limit: int = 50) -> dict:
+    """Canonical causal event log across audit, agents, execution, and research."""
+    return {"events": list_causal_events(get_ledger().conn, limit=min(int(limit), 200))}
+
+
+@mcp.tool()
+def get_causal_event_chain(event_id: int) -> dict:
+    """Forensic chain for one causal event correlation id."""
+    chain = get_causal_chain(get_ledger().conn, int(event_id))
+    return chain if chain is not None else {"error": "causal event not found"}
+
+
+@mcp.tool()
+def get_causal_replay_summary(to_event_id: int | None = None) -> dict:
+    """Replay summary up to a canonical causal event id."""
+    return replay_causal_summary(get_ledger().conn, to_event_id=to_event_id)
+
+
+@mcp.tool()
+def verify_causal_event_integrity(to_event_id: int | None = None) -> dict:
+    """Verify hash chain integrity for canonical causal events."""
+    return verify_causal_integrity(get_ledger().conn, to_event_id=to_event_id)
+
+
+@mcp.tool()
+def run_causal_counterfactual_policy(
+    max_order_notional: float = 0.0,
+    max_gross_exposure_multiple: float = 0.0,
+    require_approval_for_all_agents: bool = False,
+) -> dict:
+    """Re-score historical agent decisions under stricter counterfactual policy."""
+    return counterfactual_policy_replay(
+        get_ledger().conn,
+        max_order_notional=max_order_notional or None,
+        max_gross_exposure_multiple=max_gross_exposure_multiple or None,
+        require_approval_for_all_agents=bool(require_approval_for_all_agents),
+    )
 
 
 def main() -> None:

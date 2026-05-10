@@ -382,6 +382,82 @@ def test_agent_stats_endpoint(client: TestClient):
     assert data["total_orders"] >= 1
 
 
+def test_agent_order_governance_and_recent_actions(client: TestClient):
+    client.post("/api/deposit", json={"amount": 50_000.0})
+    r = client.post(
+        "/api/agents",
+        json={
+            "name": "scoped-agent",
+            "budget": 1_000.0,
+            "max_order_notional": 2_000.0,
+            "allowed_symbols": ["AAPL"],
+        },
+    )
+    agent_id = r.json()["id"]
+
+    blocked = client.post(
+        "/api/place-order",
+        json={
+            "client_order_id": "blocked-symbol",
+            "symbol": "MSFT",
+            "side": "BUY",
+            "quantity": 1,
+            "agent_id": agent_id,
+        },
+    )
+    assert blocked.status_code == 200
+    assert blocked.json()["status"] == "REJECTED"
+    assert blocked.json()["rejection_reason"] == "AGENT_SYMBOL_NOT_ALLOWED"
+
+    what_if = client.post(
+        "/api/risk/what-if",
+        json={
+            "symbol": "AAPL",
+            "side": "BUY",
+            "quantity": 1,
+            "agent_id": agent_id,
+        },
+    )
+    assert what_if.status_code == 200
+    body = what_if.json()
+    assert body["decision"] == "ALLOW"
+    assert any(c["name"] == "agent_budget" for c in body["checks"])
+
+    actions = client.get("/api/agent-actions/recent")
+    assert actions.status_code == 200
+    assert actions.json()["actions"][0]["decision"] == "REJECT"
+
+
+def test_agent_order_intent_approval_rechecks_policy(client: TestClient):
+    client.post("/api/deposit", json={"amount": 50_000.0})
+    r = client.post(
+        "/api/agents",
+        json={
+            "name": "approval-agent",
+            "budget": 50_000.0,
+            "max_order_notional": 50_000.0,
+            "allowed_symbols": ["AAPL"],
+        },
+    )
+    agent_id = r.json()["id"]
+    intent = client.post(
+        "/api/agent-actions/order-intent",
+        json={
+            "client_order_id": "intent-recheck",
+            "symbol": "AAPL",
+            "side": "BUY",
+            "quantity": 10,
+            "agent_id": agent_id,
+        },
+    )
+    assert intent.status_code == 200
+    intent_id = intent.json()["intent"]["id"]
+    client.post("/api/trading-enabled", json={"enabled": False})
+    approved = client.post(f"/api/order-intents/{intent_id}/approve")
+    assert approved.status_code == 200
+    assert approved.json()["error"] == "TRADING_DISABLED"
+
+
 def test_replay_endpoint(client: TestClient):
     client.post("/api/deposit", json={"amount": 5_000.0})
     r = client.get("/api/replay")
@@ -389,6 +465,88 @@ def test_replay_endpoint(client: TestClient):
     data = r.json()
     assert data["cash"] == 5_000.0
     assert data["total_deposits"] == 5_000.0
+
+
+def test_research_walk_forward_api(client: TestClient):
+    r = client.post(
+        "/api/research/walk-forward",
+        json={
+            "name": "api-research",
+            "strategy_name": "mean_reversion",
+            "symbols": ["AAPL", "MSFT", "SPY"],
+            "total_bars": 180,
+            "train_bars": 80,
+            "test_bars": 25,
+            "step_bars": 25,
+            "seed": 12,
+        },
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["id"] > 0
+    assert body["methodology"]["windows"] >= 3
+    assert body["metrics"]["bars"] > 0
+
+    runs = client.get("/api/research/runs")
+    assert runs.status_code == 200
+    assert runs.json()["runs"][0]["name"] == "api-research"
+
+    detail = client.get(f"/api/research/runs/{body['id']}")
+    assert detail.status_code == 200
+    assert detail.json()["strategy"]["name"] == "mean_reversion"
+
+
+def test_causal_forensics_api(client: TestClient):
+    client.post("/api/deposit", json={"amount": 10_000.0})
+    client.post(
+        "/api/place-order",
+        json={
+            "client_order_id": "api-causal-1",
+            "symbol": "AAPL",
+            "side": "BUY",
+            "quantity": 2,
+        },
+    )
+    events = client.get("/api/causal/events")
+    assert events.status_code == 200
+    body = events.json()
+    assert body["events"]
+    filled = next(
+        e for e in body["events"] if e["event_type"] == "execution.order_filled"
+    )
+    chain = client.get(f"/api/causal/events/{filled['id']}/chain")
+    assert chain.status_code == 200
+    assert chain.json()["correlation_id"] == "client_order_id:api-causal-1"
+    replay = client.get("/api/causal/replay")
+    assert replay.status_code == 200
+    assert replay.json()["integrity"]["ok"] is True
+
+
+def test_simulated_venue_api(client: TestClient):
+    client.post("/api/deposit", json={"amount": 20_000.0})
+    submitted = client.post(
+        "/api/venue/orders",
+        json={
+            "client_order_id": "api-venue-1",
+            "symbol": "AAPL",
+            "side": "BUY",
+            "quantity": 12,
+            "order_type": "MARKET",
+            "depth_per_tick": 5,
+            "latency_ticks": 1,
+        },
+    )
+    assert submitted.status_code == 200
+    oid = submitted.json()["id"]
+    client.post("/api/venue/tick")
+    client.post("/api/venue/tick")
+    orders = client.get("/api/venue/orders")
+    assert orders.status_code == 200
+    order = next(o for o in orders.json()["orders"] if o["id"] == oid)
+    assert order["status"] == "FILLED"
+    status = client.get("/api/venue/status")
+    assert status.status_code == 200
+    assert status.json()["fills"]["count"] >= 1
 
 
 def test_event_timeline_endpoint(client: TestClient):

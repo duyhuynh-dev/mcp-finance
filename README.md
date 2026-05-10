@@ -1,6 +1,6 @@
-# Finance Stack
+# Agent Control Plane
 
-Paper-trading ledger with **policy checks**, **fees**, **limit orders + cancel**, **MCP tool servers**, and a **React dashboard** backed by the same SQLite database.
+Local MCP-native control plane for testing AI-agent trading actions under **policy checks**, **risk explanations**, **human approval**, **simulated execution**, and **audit replay**.
 
 ## Requirements
 
@@ -101,14 +101,26 @@ ruff check api packages/core servers scripts tests
 
 GitHub Actions (`.github/workflows/ci.yml`): **ruff**, **pytest** (`FINANCE_QUOTE_BACKEND=mock`), **web build**.
 
-## Docker (API only)
+## Production Docker Deploy
 
 ```bash
-docker build -t finance-stack-api .
-docker run --rm -e FINANCE_DB_PATH=/data/finance.db -p 8001:8001 finance-stack-api
+docker build -t agent-control-plane .
+docker run --rm \
+  -e FINANCE_DB_PATH=/app/data/finance.db \
+  -e FINANCE_QUOTE_BACKEND=mock \
+  -e REQUIRE_AUTH=false \
+  -p 8000:8000 \
+  -v agent-control-plane-data:/app/data \
+  agent-control-plane
 ```
 
-Serves FastAPI on port 8001. Build the web app separately (`cd web && npm run build`) and serve `web/dist` with any static host or point the UI at this API.
+The container serves the landing page, React app, API, WebSocket, and static assets from one origin:
+
+- Landing page: `http://localhost:8000/`
+- App: `http://localhost:8000/app`
+- Health check: `http://localhost:8000/api/health`
+
+For a quick public deploy, use the included `render.yaml` blueprint. Create a new Render Blueprint from this GitHub repo; Render will build the Dockerfile, attach a persistent disk at `/app/data`, and use `/api/health` as the health check.
 
 ## Security
 

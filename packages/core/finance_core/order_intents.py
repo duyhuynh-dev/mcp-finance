@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from enum import StrEnum
 from typing import Any
 
+from finance_core.agent_actions import (
+    TradeDecision,
+    evaluate_trade_decision,
+    record_agent_action,
+)
+from finance_core.audit import append_audit
 from finance_core.db import transaction
 from finance_core.types import OrderKind, OrderSide, utc_now
 
@@ -28,6 +35,12 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
         "agent_id": int(row["agent_id"]) if row["agent_id"] is not None else None,
         "actor": row["actor"],
         "status": row["status"],
+        "reason": row["reason"] if "reason" in row.keys() else None,
+        "decision": (
+            json.loads(row["decision_json"])
+            if "decision_json" in row.keys() and row["decision_json"]
+            else None
+        ),
         "created_at": row["created_at"],
         "resolved_at": row["resolved_at"],
     }
@@ -44,6 +57,8 @@ def create_order_intent(
     limit_price: float | None = None,
     agent_id: int | None = None,
     actor: str = "api",
+    reason: str | None = None,
+    decision: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     sym = symbol.strip().upper()
     sd = side.strip().upper()
@@ -55,9 +70,10 @@ def create_order_intent(
                 """
                 INSERT INTO order_intents (
                     client_order_id, symbol, side, quantity,
-                    order_kind, limit_price, agent_id, actor, status, created_at
+                    order_kind, limit_price, agent_id, actor, status, reason,
+                    decision_json, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     client_order_id.strip(),
@@ -69,6 +85,8 @@ def create_order_intent(
                     agent_id,
                     actor,
                     OrderIntentStatus.PENDING.value,
+                    reason,
+                    json.dumps(decision, sort_keys=True) if decision is not None else None,
                     ts,
                 ),
             )
@@ -80,6 +98,65 @@ def create_order_intent(
     ).fetchone()
     assert row is not None
     return _row_to_dict(row)
+
+
+def create_governed_order_intent(
+    ledger: Any,
+    *,
+    client_order_id: str,
+    symbol: str,
+    side: str,
+    quantity: float,
+    order_kind: str = "MARKET",
+    limit_price: float | None = None,
+    agent_id: int | None = None,
+    actor: str = "api",
+    tool: str = "create_pending_order_intent",
+) -> dict[str, Any]:
+    decision = evaluate_trade_decision(
+        ledger,
+        symbol=symbol,
+        side=side,
+        quantity=quantity,
+        order_kind=order_kind,
+        limit_price=limit_price,
+        actor=actor,
+        agent_id=agent_id,
+        tool=tool,
+    )
+    if decision["decision"] == TradeDecision.REJECT.value:
+        record_agent_action(
+            ledger.conn,
+            actor=actor,
+            tool=tool,
+            action="order_intent_rejected",
+            decision=decision,
+            result={"error": decision["reason"]},
+        )
+        return {"error": decision["reason"], "decision": decision}
+
+    intent = create_order_intent(
+        ledger.conn,
+        client_order_id=client_order_id,
+        symbol=symbol,
+        side=side,
+        quantity=decision.get("adjusted_quantity", quantity),
+        order_kind=order_kind,
+        limit_price=limit_price,
+        agent_id=agent_id,
+        actor=actor,
+        reason=decision.get("reason") or "HUMAN_APPROVAL_REQUESTED",
+        decision=decision,
+    )
+    record_agent_action(
+        ledger.conn,
+        actor=actor,
+        tool=tool,
+        action="order_intent_created",
+        decision=decision,
+        result=intent,
+    )
+    return {"intent": intent, "decision": decision}
 
 
 def approve_order_intent(ledger: Any, intent_id: int, *, actor: str) -> dict[str, Any]:
@@ -95,11 +172,32 @@ def approve_order_intent(ledger: Any, intent_id: int, *, actor: str) -> dict[str
     kind = OrderKind(row["order_kind"])
     lp = float(row["limit_price"]) if row["limit_price"] is not None else None
     aid = row["agent_id"]
+    decision = evaluate_trade_decision(
+        ledger,
+        symbol=row["symbol"],
+        side=side,
+        quantity=float(row["quantity"]),
+        order_kind=kind,
+        limit_price=lp,
+        actor=actor,
+        agent_id=int(aid) if aid is not None else None,
+        tool="approve_pending_order_intent",
+    )
+    if decision["decision"] == TradeDecision.REJECT.value:
+        record_agent_action(
+            ledger.conn,
+            actor=actor,
+            tool="approve_pending_order_intent",
+            action="order_intent_approval_rejected",
+            decision=decision,
+            result={"intent_id": intent_id, "error": decision["reason"]},
+        )
+        return {"error": decision["reason"], "decision": decision}
     res = ledger.place_order(
         row["client_order_id"],
         row["symbol"],
         side,
-        float(row["quantity"]),
+        float(decision.get("adjusted_quantity", row["quantity"])),
         order_kind=kind,
         limit_price=lp,
         actor=actor,
@@ -112,10 +210,28 @@ def approve_order_intent(ledger: Any, intent_id: int, *, actor: str) -> dict[str
             """,
             (OrderIntentStatus.APPROVED.value, utc_now().isoformat(), intent_id),
         )
-    return {"ok": True, "place_order": res.to_audit_dict()}
+        append_audit(
+            ledger.conn,
+            actor=actor,
+            action="approve_order_intent",
+            payload={"intent_id": intent_id, "decision": decision["decision"]},
+            result=res.to_audit_dict(),
+        )
+    result = {"ok": True, "place_order": res.to_audit_dict(), "decision": decision}
+    record_agent_action(
+        ledger.conn,
+        actor=actor,
+        tool="approve_pending_order_intent",
+        action="order_intent_approved",
+        decision=decision,
+        result=result,
+    )
+    return result
 
 
-def reject_order_intent(conn: sqlite3.Connection, intent_id: int) -> dict[str, Any]:
+def reject_order_intent(
+    conn: sqlite3.Connection, intent_id: int, *, actor: str = "api",
+) -> dict[str, Any]:
     row = conn.execute(
         "SELECT * FROM order_intents WHERE id = ?", (intent_id,),
     ).fetchone()
@@ -129,6 +245,13 @@ def reject_order_intent(conn: sqlite3.Connection, intent_id: int) -> dict[str, A
             UPDATE order_intents SET status = ?, resolved_at = ? WHERE id = ?
             """,
             (OrderIntentStatus.REJECTED.value, utc_now().isoformat(), intent_id),
+        )
+        append_audit(
+            conn,
+            actor=actor,
+            action="reject_order_intent",
+            payload={"intent_id": intent_id},
+            result={"ok": True},
         )
     return {"ok": True, "id": intent_id}
 

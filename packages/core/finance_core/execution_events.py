@@ -6,6 +6,7 @@ import json
 import sqlite3
 from typing import Any
 
+from finance_core.causal import append_causal_event, infer_correlation_id
 from finance_core.types import utc_now
 
 
@@ -22,7 +23,18 @@ def append_execution_event(
         """,
         (utc_now().isoformat(), event_type, json.dumps(payload, default=str)),
     )
-    return int(cur.lastrowid)
+    event_id = int(cur.lastrowid)
+    append_causal_event(
+        conn,
+        event_type=f"execution.{event_type}",
+        actor=str(payload.get("actor", "system")),
+        agent_id=payload.get("agent_id"),
+        payload={"execution_event_id": event_id, **payload},
+        correlation_id=infer_correlation_id(payload, f"execution:{event_id}"),
+        source_table="execution_events",
+        source_id=event_id,
+    )
+    return event_id
 
 
 def list_execution_events(

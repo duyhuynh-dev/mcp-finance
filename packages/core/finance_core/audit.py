@@ -4,6 +4,7 @@ import json
 import sqlite3
 from typing import Any
 
+from finance_core.causal import append_causal_event, infer_correlation_id
 from finance_core.request_context import get_request_id
 from finance_core.types import utc_now
 
@@ -34,7 +35,23 @@ def append_audit(
             json.dumps(result, default=str) if result is not None else None,
         ),
     )
-    return int(cur.lastrowid)
+    audit_id = int(cur.lastrowid)
+    payload_for_event = {
+        "audit_id": audit_id,
+        "action": action,
+        "payload": payload,
+        "result": result,
+    }
+    append_causal_event(
+        conn,
+        event_type=f"audit.{action}",
+        actor=actor,
+        payload=payload_for_event,
+        correlation_id=infer_correlation_id(payload, f"audit:{audit_id}"),
+        source_table="audit_events",
+        source_id=audit_id,
+    )
+    return audit_id
 
 
 def list_audit(

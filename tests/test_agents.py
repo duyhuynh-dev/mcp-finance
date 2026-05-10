@@ -5,6 +5,7 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
+from finance_core.agent_actions import evaluate_trade_decision
 from finance_core.agents import AgentManager
 from finance_core.ledger import Ledger
 from finance_core.market import MockQuoteProvider
@@ -66,3 +67,35 @@ def test_agent_stats():
     assert stats.filled_orders == 2
     assert stats.total_notional > 0
     assert "AAPL" in stats.positions
+
+
+def test_agent_decision_rejects_inactive_agent():
+    lg, mgr = _setup()
+    a = mgr.register("inactive", 10_000.0)
+    mgr.set_active(a.id, False)
+    d = evaluate_trade_decision(
+        lg, symbol="AAPL", side="BUY", quantity=1.0, agent_id=a.id,
+    )
+    assert d["decision"] == "REJECT"
+    assert d["reason"] == "AGENT_INACTIVE"
+
+
+def test_agent_decision_rejects_symbol_budget_and_agent_notional():
+    lg, mgr = _setup()
+    a = mgr.register(
+        "guarded", 1_000.0, max_order_notional=2_000.0, allowed_symbols=["AAPL"],
+    )
+    wrong_symbol = evaluate_trade_decision(
+        lg, symbol="MSFT", side="BUY", quantity=1.0, agent_id=a.id,
+    )
+    assert wrong_symbol["reason"] == "AGENT_SYMBOL_NOT_ALLOWED"
+
+    too_large = evaluate_trade_decision(
+        lg, symbol="AAPL", side="BUY", quantity=20.0, agent_id=a.id,
+    )
+    assert too_large["reason"] == "AGENT_MAX_ORDER_NOTIONAL"
+
+    over_budget = evaluate_trade_decision(
+        lg, symbol="AAPL", side="BUY", quantity=6.0, agent_id=a.id,
+    )
+    assert over_budget["reason"] == "AGENT_BUDGET_EXCEEDED"

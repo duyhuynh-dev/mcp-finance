@@ -19,8 +19,8 @@ RUN pip install --no-cache-dir -e .
 
 COPY api/ api/
 COPY servers/ servers/
-COPY evals/ evals/
-COPY tests/ tests/
+COPY scripts/ scripts/
+COPY scenarios/ scenarios/
 
 COPY --from=frontend-build /app/web/dist /app/web/dist
 
@@ -30,6 +30,7 @@ ENV PYTHONPATH=/app/packages/core:/app
 ENV FINANCE_DB_PATH=/app/data/finance.db
 ENV FINANCE_QUOTE_BACKEND=mock
 ENV REQUIRE_AUTH=false
+ENV CORS_ORIGINS=*
 ENV PORT=8000
 
 EXPOSE 8000

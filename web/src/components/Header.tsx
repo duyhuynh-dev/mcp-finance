@@ -16,15 +16,15 @@ export default function Header() {
       <div className="mx-auto flex max-w-[1440px] flex-wrap items-center justify-between gap-4 px-8 py-3.5">
         <div className="flex items-center gap-4">
           <div className="relative flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 via-indigo-400 to-emerald-400 shadow-lg shadow-indigo-500/20">
-            <span className="font-display text-sm font-extrabold text-white tracking-tight">FS</span>
+            <span className="font-display text-sm font-extrabold text-white tracking-tight">AC</span>
             <div className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-[#06070a] bg-emerald-400" />
           </div>
           <div>
             <h1 className="font-display text-[17px] font-bold tracking-tight text-white">
-              Finance Stack
+              Agent Control Plane
             </h1>
             <p className="text-[11px] font-medium text-zinc-500 tracking-wide">
-              MCP-native paper trading engine
+              Governed AI trading actions, risk checks, and human approval
             </p>
           </div>
         </div>

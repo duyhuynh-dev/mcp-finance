@@ -27,7 +27,14 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from finance_core.agent_actions import (
+    TradeDecision,
+    evaluate_trade_decision,
+    list_recent_agent_actions,
+    record_agent_action,
+)
 from finance_core.agents import AgentManager
 from finance_core.alerts import AlertEngine, AlertType
 from finance_core.audit import list_audit
@@ -42,6 +49,13 @@ from finance_core.auth import (
 )
 from finance_core.backtest import BacktestConfig, run_backtest
 from finance_core.broadcast import event_bus
+from finance_core.causal import (
+    counterfactual_policy_replay,
+    get_causal_chain,
+    list_causal_events,
+    replay_causal_summary,
+    verify_causal_integrity,
+)
 from finance_core.events import event_timeline, max_event_id, replay_to_event
 from finance_core.execution_events import list_execution_events, replay_summary
 from finance_core.execution_quality import build_execution_quality
@@ -49,29 +63,34 @@ from finance_core.ledger import Ledger, reset_demo_db
 from finance_core.observability import generate_request_id, metrics
 from finance_core.order_intents import (
     approve_order_intent,
+    create_governed_order_intent,
     create_order_intent,
     list_pending_intents,
     reject_order_intent,
 )
 from finance_core.policy import PolicyEngine, PolicyRules
-from finance_core.pre_trade_risk import (
-    clamp_quantity_for_gross_exposure,
-    gross_notional,
-    projected_gross_after_order,
-)
 from finance_core.quote_factory import create_quote_provider
 from finance_core.ratelimit import rate_limiter
 from finance_core.reconciliation import reconcile_ledger_vs_alpaca
 from finance_core.request_context import request_id_ctx
+from finance_core.research import (
+    WalkForwardConfig,
+    available_research_strategies,
+    get_research_run,
+    list_research_runs,
+    run_walk_forward_report,
+    save_research_run,
+)
 from finance_core.risk import (
     build_risk_snapshot,
     compute_risk_metrics,
     stress_book_pnl_impact,
 )
-from finance_core.risk_budget import build_risk_budget_section, check_var_cvar_budget
+from finance_core.risk_budget import build_risk_budget_section
 from finance_core.signal_alpaca_bridge import forward_pending_strategy_signals
 from finance_core.simulator import PriceSimulator
 from finance_core.types import OrderKind, OrderSide, OrderStatus, utc_now
+from finance_core.venue import SimulatedExecutionVenue, VenueConfig
 from pydantic import BaseModel, Field
 
 logging.basicConfig(
@@ -457,6 +476,75 @@ def execution_replay(
     return replay_summary(lg.conn, to_event_id=to_event_id)
 
 
+class CounterfactualPolicyBody(BaseModel):
+    max_order_notional: float | None = None
+    max_gross_exposure_multiple: float | None = None
+    require_approval_for_all_agents: bool = False
+    limit: int = 200
+
+
+@app.get("/api/causal/events")
+def causal_events(
+    request: Request,
+    lg: Annotated[Ledger, Depends(get_ledger)],
+    limit: int = 100,
+    offset: int = 0,
+) -> dict:
+    _require_permission(request, "trade")
+    return {
+        "events": list_causal_events(
+            lg.conn, limit=min(limit, 500), offset=max(offset, 0),
+        ),
+    }
+
+
+@app.get("/api/causal/events/{event_id}/chain")
+def causal_chain(
+    request: Request, lg: Annotated[Ledger, Depends(get_ledger)], event_id: int,
+) -> dict:
+    _require_permission(request, "trade")
+    chain = get_causal_chain(lg.conn, event_id)
+    if chain is None:
+        raise HTTPException(status_code=404, detail="causal event not found")
+    return chain
+
+
+@app.get("/api/causal/replay")
+def causal_replay(
+    request: Request,
+    lg: Annotated[Ledger, Depends(get_ledger)],
+    to_event_id: int | None = None,
+) -> dict:
+    _require_permission(request, "trade")
+    return replay_causal_summary(lg.conn, to_event_id=to_event_id)
+
+
+@app.get("/api/causal/integrity")
+def causal_integrity(
+    request: Request,
+    lg: Annotated[Ledger, Depends(get_ledger)],
+    to_event_id: int | None = None,
+) -> dict:
+    _require_permission(request, "trade")
+    return verify_causal_integrity(lg.conn, to_event_id=to_event_id)
+
+
+@app.post("/api/causal/counterfactual")
+def causal_counterfactual(
+    request: Request,
+    lg: Annotated[Ledger, Depends(get_ledger)],
+    body: CounterfactualPolicyBody,
+) -> dict:
+    _require_permission(request, "trade")
+    return counterfactual_policy_replay(
+        lg.conn,
+        max_order_notional=body.max_order_notional,
+        max_gross_exposure_multiple=body.max_gross_exposure_multiple,
+        require_approval_for_all_agents=body.require_approval_for_all_agents,
+        limit=min(body.limit, 500),
+    )
+
+
 @app.get("/api/execution/quality")
 def execution_quality(
     lg: Annotated[Ledger, Depends(get_ledger)], limit_orders: int = 500,
@@ -526,6 +614,68 @@ def place_order_endpoint(
     _require_permission(request, "trade")
     s = OrderSide(body.side.strip().upper())
     k = OrderKind(body.order_kind.strip().upper())
+    if body.agent_id is not None:
+        decision = evaluate_trade_decision(
+            lg,
+            symbol=body.symbol,
+            side=s,
+            quantity=body.quantity,
+            order_kind=k,
+            limit_price=body.limit_price,
+            actor="dashboard",
+            agent_id=body.agent_id,
+            tool="place_order",
+        )
+        if decision["decision"] == TradeDecision.REJECT.value:
+            result = {
+                "success": False,
+                "order_id": None,
+                "status": "REJECTED",
+                "rejection_reason": decision["reason"],
+                "message": "agent_governance_rejected",
+                "decision": decision,
+            }
+            record_agent_action(
+                lg.conn,
+                actor="dashboard",
+                tool="place_order",
+                action="order_rejected",
+                decision=decision,
+                result=result,
+            )
+            return result
+        if decision["decision"] == TradeDecision.REQUIRE_APPROVAL.value:
+            intent = create_order_intent(
+                lg.conn,
+                client_order_id=body.client_order_id,
+                symbol=body.symbol,
+                side=body.side,
+                quantity=decision.get("adjusted_quantity", body.quantity),
+                order_kind=body.order_kind,
+                limit_price=body.limit_price,
+                agent_id=body.agent_id,
+                actor="dashboard",
+                reason=decision.get("reason") or "HUMAN_APPROVAL_REQUIRED",
+                decision=decision,
+            )
+            result = {
+                "success": False,
+                "order_id": None,
+                "status": "PENDING_APPROVAL",
+                "message": "human_approval_required",
+                "intent": intent,
+                "decision": decision,
+            }
+            record_agent_action(
+                lg.conn,
+                actor="dashboard",
+                tool="place_order",
+                action="order_requires_approval",
+                decision=decision,
+                result=result,
+            )
+            return result
+        body.quantity = float(decision.get("adjusted_quantity", body.quantity))
     broker_exec = os.environ.get("BROKER_EXECUTION_MODE", "").lower() in (
         "alpaca",
         "alpaca_paper",
@@ -572,6 +722,16 @@ def place_order_endpoint(
         ).to_audit_dict()
         mirrored["broker_mode"] = "alpaca_paper"
         mirrored["broker_order_id"] = er.broker_order_id
+        if body.agent_id is not None:
+            mirrored["decision"] = decision
+            record_agent_action(
+                lg.conn,
+                actor="dashboard_broker",
+                tool="place_order",
+                action="order_placed",
+                decision=decision,
+                result=mirrored,
+            )
         return mirrored
 
     r = lg.place_order(
@@ -579,7 +739,18 @@ def place_order_endpoint(
         order_kind=k, limit_price=body.limit_price,
         actor="dashboard", agent_id=body.agent_id,
     )
-    return r.to_audit_dict()
+    out = r.to_audit_dict()
+    if body.agent_id is not None:
+        out["decision"] = decision
+        record_agent_action(
+            lg.conn,
+            actor="dashboard",
+            tool="place_order",
+            action="order_placed",
+            decision=decision,
+            result=out,
+        )
+    return out
 
 
 @app.post("/api/reset-demo")
@@ -640,97 +811,22 @@ class RiskWhatIfBody(BaseModel):
     quantity: float = Field(gt=0)
     order_kind: str = "MARKET"
     limit_price: float | None = None
+    agent_id: int | None = None
+    tool: str = "place_order"
 
 
 def _evaluate_risk_what_if(lg: Ledger, body: RiskWhatIfBody) -> dict[str, Any]:
-    sym = body.symbol.strip().upper()
-    side = OrderSide(body.side.strip().upper())
-    order_kind = OrderKind(body.order_kind.strip().upper())
-    if order_kind == OrderKind.LIMIT and (body.limit_price is None or body.limit_price <= 0):
-        return {"allowed": False, "reason": "INVALID_LIMIT_PRICE"}
-    if not lg.get_trading_enabled():
-        return {"allowed": False, "reason": "TRADING_DISABLED"}
-    try:
-        quote = lg.quotes.get_quote(sym)
-        mark = quote.price
-    except ValueError:
-        return {"allowed": False, "reason": "UNKNOWN_SYMBOL"}
-
-    policy_price = body.limit_price if order_kind == OrderKind.LIMIT else mark
-    assert policy_price is not None
-    state = lg.portfolio_state()
-    equity = lg.estimated_equity()
-    pos_now = lg.position_quantity(sym)
-    pos_after = pos_now + body.quantity if side == OrderSide.BUY else pos_now - body.quantity
-    pr = lg.policy_engine.check(
-        symbol=sym,
-        side=side,
+    return evaluate_trade_decision(
+        lg,
+        symbol=body.symbol,
+        side=body.side,
         quantity=body.quantity,
-        price=float(policy_price),
-        state=state,
-        position_after=pos_after,
-        daily_order_count=lg._daily_order_count(),
-        equity=equity,
+        order_kind=body.order_kind,
+        limit_price=body.limit_price,
+        actor="dashboard",
+        agent_id=body.agent_id,
+        tool=body.tool,
     )
-    if not pr.allowed and pr.reason:
-        return {"allowed": False, "reason": pr.reason.value}
-
-    q_adj, rpre = clamp_quantity_for_gross_exposure(
-        rules=lg.policy_engine.rules,
-        equity=equity,
-        positions=state.positions,
-        symbol=sym,
-        side=side,
-        quantity=body.quantity,
-        price=float(policy_price),
-    )
-    if rpre is not None:
-        return {"allowed": False, "reason": rpre.value}
-
-    rb = check_var_cvar_budget(
-        lg.conn,
-        lg.policy_engine.rules,
-        state.positions,
-        sym,
-        side,
-        q_adj,
-        float(policy_price),
-    )
-    if rb is not None:
-        return {"allowed": False, "reason": rb.value}
-
-    gross_now = gross_notional(state.positions)
-    gross_after = projected_gross_after_order(
-        positions=state.positions,
-        symbol=sym,
-        side=side,
-        quantity=q_adj,
-        price=float(policy_price),
-    )
-    gross_multiple_after = (gross_after / equity) if equity > 1e-9 else None
-    notional = q_adj * float(policy_price)
-    est_fill = lg._apply_slippage(mark, side, q_adj * mark)
-    est_fee = lg._fee_amount(notional)
-    return {
-        "allowed": True,
-        "reason": None,
-        "symbol": sym,
-        "side": side.value,
-        "order_kind": order_kind.value,
-        "requested_quantity": body.quantity,
-        "adjusted_quantity": q_adj,
-        "would_resize": q_adj + 1e-9 < body.quantity,
-        "estimated_mark_price": round(mark, 6),
-        "estimated_fill_price": round(est_fill, 6),
-        "projected_notional": round(notional, 2),
-        "estimated_fee": round(est_fee, 6),
-        "projected_gross_notional_before": round(gross_now, 2),
-        "projected_gross_notional_after": round(gross_after, 2),
-        "projected_gross_multiple_after": (
-            round(gross_multiple_after, 4) if gross_multiple_after is not None else None
-        ),
-        "risk_budget": build_risk_budget_section(lg.conn, lg.policy_engine.rules),
-    }
 
 
 @app.post("/api/risk/what-if")
@@ -1046,6 +1142,19 @@ def create_order_intent_endpoint(
     request: Request, lg: Annotated[Ledger, Depends(get_ledger)], body: OrderIntentCreateBody,
 ) -> dict:
     _require_permission(request, "trade")
+    if body.agent_id is not None:
+        return create_governed_order_intent(
+            lg,
+            client_order_id=body.client_order_id,
+            symbol=body.symbol,
+            side=body.side,
+            quantity=body.quantity,
+            order_kind=body.order_kind,
+            limit_price=body.limit_price,
+            agent_id=body.agent_id,
+            actor="dashboard",
+            tool="create_pending_order_intent",
+        )
     return create_order_intent(
         lg.conn,
         client_order_id=body.client_order_id,
@@ -1080,7 +1189,36 @@ def reject_order_intent_endpoint(
     request: Request, lg: Annotated[Ledger, Depends(get_ledger)], intent_id: int,
 ) -> dict:
     _require_permission(request, "manage_agents")
-    return reject_order_intent(lg.conn, intent_id)
+    return reject_order_intent(lg.conn, intent_id, actor="dashboard")
+
+
+@app.post("/api/agent-actions/order-intent")
+def create_agent_action_order_intent(
+    request: Request, lg: Annotated[Ledger, Depends(get_ledger)], body: OrderIntentCreateBody,
+) -> dict:
+    _require_permission(request, "trade")
+    if body.agent_id is None:
+        raise HTTPException(status_code=400, detail="agent_id is required")
+    return create_governed_order_intent(
+        lg,
+        client_order_id=body.client_order_id,
+        symbol=body.symbol,
+        side=body.side,
+        quantity=body.quantity,
+        order_kind=body.order_kind,
+        limit_price=body.limit_price,
+        agent_id=body.agent_id,
+        actor="dashboard",
+        tool="create_pending_order_intent",
+    )
+
+
+@app.get("/api/agent-actions/recent")
+def recent_agent_actions(
+    request: Request, lg: Annotated[Ledger, Depends(get_ledger)], limit: int = 50,
+) -> dict:
+    _require_permission(request, "trade")
+    return {"actions": list_recent_agent_actions(lg.conn, limit=min(limit, 200))}
 
 
 @app.post("/api/strategies/forward-signals-alpaca")
@@ -1250,6 +1388,62 @@ def backtest_history(
             for r in rows
         ]
     }
+
+
+class ResearchWalkForwardBody(BaseModel):
+    name: str = ""
+    strategy_name: str = "momentum"
+    symbols: list[str] = Field(default_factory=lambda: ["AAPL", "MSFT", "SPY", "QQQ"])
+    total_bars: int = 360
+    train_bars: int = 120
+    test_bars: int = 40
+    step_bars: int = 40
+    seed: int = 42
+    drift: float = 0.00025
+    volatility: float = 0.018
+    correlation: float = 0.35
+    start_prices: dict[str, float] = Field(default_factory=dict)
+    strategy_params: dict[str, Any] = Field(default_factory=dict)
+
+
+@app.get("/api/research/strategies")
+def research_strategies(request: Request) -> dict:
+    _require_permission(request, "trade")
+    return {"strategies": available_research_strategies()}
+
+
+@app.post("/api/research/walk-forward")
+def research_walk_forward(
+    request: Request,
+    lg: Annotated[Ledger, Depends(get_ledger)],
+    body: ResearchWalkForwardBody,
+) -> dict:
+    _require_permission(request, "trade")
+    try:
+        cfg = WalkForwardConfig.from_dict(body.model_dump())
+        report = run_walk_forward_report(cfg)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return save_research_run(lg.conn, cfg, report)
+
+
+@app.get("/api/research/runs")
+def research_runs(
+    request: Request, lg: Annotated[Ledger, Depends(get_ledger)], limit: int = 50,
+) -> dict:
+    _require_permission(request, "trade")
+    return {"runs": list_research_runs(lg.conn, limit=min(limit, 200))}
+
+
+@app.get("/api/research/runs/{run_id}")
+def research_run_detail(
+    request: Request, lg: Annotated[Ledger, Depends(get_ledger)], run_id: int,
+) -> dict:
+    _require_permission(request, "trade")
+    run = get_research_run(lg.conn, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="research run not found")
+    return run
 
 
 # ── alerts ───────────────────────────────────────────────────
@@ -1520,6 +1714,80 @@ def broker_status(lg: Annotated[Ledger, Depends(get_ledger)]) -> dict:
     }
 
 
+# ── simulated execution venue ────────────────────────────────
+
+class VenueOrderBody(BaseModel):
+    client_order_id: str
+    symbol: str
+    side: str
+    quantity: float = Field(gt=0)
+    order_type: str = "MARKET"
+    limit_price: float | None = None
+    time_in_force: str = "DAY"
+    base_spread_bps: float = 8.0
+    impact_bps_per_1000_shares: float = 2.5
+    depth_per_tick: float = 40.0
+    latency_ticks: int = 1
+    default_tif_ticks: int = 5
+
+
+def _venue_from_body(lg: Ledger, body: VenueOrderBody | None = None) -> SimulatedExecutionVenue:
+    cfg = VenueConfig()
+    if body is not None:
+        cfg = VenueConfig(
+            base_spread_bps=body.base_spread_bps,
+            impact_bps_per_1000_shares=body.impact_bps_per_1000_shares,
+            depth_per_tick=body.depth_per_tick,
+            latency_ticks=body.latency_ticks,
+            default_tif_ticks=body.default_tif_ticks,
+        )
+    return SimulatedExecutionVenue(lg, cfg)
+
+
+@app.get("/api/venue/status")
+def venue_status(request: Request, lg: Annotated[Ledger, Depends(get_ledger)]) -> dict:
+    _require_permission(request, "trade")
+    return _venue_from_body(lg).status()
+
+
+@app.get("/api/venue/orders")
+def venue_orders(
+    request: Request, lg: Annotated[Ledger, Depends(get_ledger)], limit: int = 100,
+) -> dict:
+    _require_permission(request, "trade")
+    return {"orders": _venue_from_body(lg).list_orders(limit=min(limit, 200))}
+
+
+@app.post("/api/venue/orders")
+def venue_submit_order(
+    request: Request, lg: Annotated[Ledger, Depends(get_ledger)], body: VenueOrderBody,
+) -> dict:
+    _require_permission(request, "trade")
+    return _venue_from_body(lg, body).submit_order(
+        client_order_id=body.client_order_id,
+        symbol=body.symbol,
+        side=OrderSide(body.side.strip().upper()),
+        quantity=body.quantity,
+        order_type=OrderKind(body.order_type.strip().upper()),
+        limit_price=body.limit_price,
+        time_in_force=body.time_in_force,
+    )
+
+
+@app.post("/api/venue/tick")
+def venue_tick(request: Request, lg: Annotated[Ledger, Depends(get_ledger)]) -> dict:
+    _require_permission(request, "trade")
+    return _venue_from_body(lg).tick()
+
+
+@app.post("/api/venue/orders/{order_id}/cancel")
+def venue_cancel_order(
+    request: Request, lg: Annotated[Ledger, Depends(get_ledger)], order_id: int,
+) -> dict:
+    _require_permission(request, "trade")
+    return _venue_from_body(lg).cancel_order(order_id)
+
+
 # ── VWAP/TWAP execution ──────────────────────────────────────
 
 class ExecutionPlanBody(BaseModel):
@@ -1594,3 +1862,26 @@ async def websocket_endpoint(websocket: WebSocket):
 
 def create_app() -> FastAPI:
     return app
+
+
+# ── Frontend static app ──────────────────────────────────────
+
+WEB_DIST = ROOT / "web" / "dist"
+
+if WEB_DIST.exists():
+    assets_dir = WEB_DIST / "assets"
+    if assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
+    @app.get("/", include_in_schema=False)
+    def serve_landing_page() -> FileResponse:
+        return FileResponse(WEB_DIST / "index.html")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def serve_frontend(full_path: str) -> FileResponse:
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="Not found")
+        candidate = WEB_DIST / full_path
+        if candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(WEB_DIST / "index.html")
