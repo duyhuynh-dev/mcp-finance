@@ -208,17 +208,27 @@ export default function LandingPage({ onEnterApp, onOpenDocs }: LandingPageProps
 }
 
 function ScrollWorkflow() {
-  const scrollerRef = useRef<HTMLDivElement | null>(null)
+  const stageRefs = useRef<Array<HTMLDivElement | null>>([])
   const [activeStage, setActiveStage] = useState(0)
 
   useEffect(() => {
     const update = () => {
-      const el = scrollerRef.current
-      if (!el) return
-      const rect = el.getBoundingClientRect()
-      const scrollable = Math.max(rect.height - window.innerHeight, 1)
-      const progress = Math.min(Math.max(-rect.top / scrollable, 0), 0.999)
-      setActiveStage(Math.floor(progress * STAGES.length))
+      const viewportTarget = window.innerHeight * 0.5
+      let nextStage = 0
+      let closestDistance = Number.POSITIVE_INFINITY
+
+      stageRefs.current.forEach((el, index) => {
+        if (!el) return
+        const rect = el.getBoundingClientRect()
+        const stageCenter = rect.top + rect.height * 0.5
+        const distance = Math.abs(stageCenter - viewportTarget)
+        if (distance < closestDistance) {
+          closestDistance = distance
+          nextStage = index
+        }
+      })
+
+      setActiveStage(nextStage)
     }
 
     update()
@@ -231,8 +241,8 @@ function ScrollWorkflow() {
   }, [])
 
   return (
-    <div ref={scrollerRef} className="relative min-h-[520vh]">
-      <div className="sticky top-20 grid min-h-[calc(100vh-5rem)] items-center gap-10 lg:grid-cols-[0.9fr_1.1fr]">
+    <div className="relative">
+      <div className="sticky top-20 z-10 grid min-h-[calc(100vh-5rem)] items-center gap-10 lg:grid-cols-[0.9fr_1.1fr]">
         <div>
           <div className="mb-8 max-w-2xl">
             <p className="font-mono text-[11px] font-bold uppercase tracking-[0.2em] text-emerald-300">
@@ -253,7 +263,10 @@ function ScrollWorkflow() {
                   className={`block w-full border-b border-white/[0.08] px-5 py-5 text-left transition-all duration-500 last:border-b-0 ${
                     active ? 'bg-white/[0.035]' : 'bg-transparent hover:bg-white/[0.02]'
                   }`}
-                  onClick={() => setActiveStage(index)}
+                  onClick={() => {
+                    stageRefs.current[index]?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                    setActiveStage(index)
+                  }}
                 >
                   <div className="flex items-center gap-5">
                     <span className={`font-mono text-xs ${active ? 'text-emerald-300' : 'text-zinc-600'}`}>
@@ -284,6 +297,19 @@ function ScrollWorkflow() {
         <div key={activeStage} className="animate-fade-in-up transition-all duration-500">
           <StageVisual index={activeStage} />
         </div>
+      </div>
+
+      <div className="-mt-[calc(100vh-5rem)]">
+        {STAGES.map((stage, index) => (
+          <div
+            key={stage.title}
+            ref={(el) => {
+              stageRefs.current[index] = el
+            }}
+            className="h-screen"
+            aria-hidden="true"
+          />
+        ))}
       </div>
     </div>
   )
