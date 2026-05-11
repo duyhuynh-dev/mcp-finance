@@ -58,21 +58,20 @@ export default function LandingPage({ onEnterApp, onOpenDocs }: LandingPageProps
   const depthRef = useRef<HTMLElement | null>(null)
 
   useEffect(() => {
-    const target = window.location.hash === '#depth' ? depthRef.current : window.location.hash === '#flow' ? flowRef.current : null
-    if (!target) return
-    window.requestAnimationFrame(() => {
-      target.scrollIntoView({ block: 'start' })
-    })
+    window.scrollTo({ top: 0 })
+    if (window.location.hash) {
+      window.history.replaceState({}, '', window.location.pathname)
+    }
   }, [])
 
   const scrollToSection = (section: HTMLElement | null, hash: string) => {
     if (!section) return
     window.history.replaceState({}, '', hash)
-    section.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    window.scrollTo({ top: Math.max(section.offsetTop - 72, 0), behavior: 'smooth' })
   }
 
   return (
-    <div className="min-h-screen overflow-hidden bg-[#050609] text-zinc-100">
+    <div className="min-h-screen bg-[#050609] text-zinc-100">
       <header className="fixed left-0 right-0 top-0 z-30 border-b border-white/[0.06] bg-[#050609]/65 backdrop-blur-xl">
         <div className="mx-auto flex max-w-[1440px] items-center justify-between px-6 py-4 md:px-10">
           <div className="flex items-center gap-3">
@@ -141,7 +140,7 @@ export default function LandingPage({ onEnterApp, onOpenDocs }: LandingPageProps
           </div>
         </section>
 
-        <section ref={flowRef} id="flow" className="border-y border-white/[0.06] bg-white/[0.018]">
+        <section ref={flowRef} className="border-y border-white/[0.06] bg-white/[0.018]">
           <div className="mx-auto max-w-[1440px] px-6 py-20 md:px-10">
             <div className="mb-16 max-w-4xl">
               <p className="font-mono text-[11px] font-bold uppercase tracking-[0.2em] text-indigo-300">Controlled workflow</p>
@@ -156,7 +155,7 @@ export default function LandingPage({ onEnterApp, onOpenDocs }: LandingPageProps
           </div>
         </section>
 
-        <section ref={depthRef} id="depth" className="border-y border-white/[0.06] bg-white/[0.025]">
+        <section ref={depthRef} className="border-y border-white/[0.06] bg-white/[0.025]">
           <div className="mx-auto grid max-w-[1440px] gap-12 px-6 py-20 md:px-10 xl:grid-cols-[0.8fr_1.2fr]">
             <div>
               <p className="font-mono text-[11px] font-bold uppercase tracking-[0.2em] text-emerald-300">Technical depth</p>
@@ -225,19 +224,27 @@ export default function LandingPage({ onEnterApp, onOpenDocs }: LandingPageProps
 }
 
 function ScrollWorkflow() {
-  const scrollerRef = useRef<HTMLDivElement | null>(null)
+  const stageRefs = useRef<Array<HTMLElement | null>>([])
   const [activeStage, setActiveStage] = useState(0)
 
   useEffect(() => {
     const update = () => {
-      const el = scrollerRef.current
-      if (!el) return
+      const targetLine = window.innerHeight * 0.52
+      let nextStage = 0
+      let closest = Number.POSITIVE_INFINITY
 
-      const rect = el.getBoundingClientRect()
-      const scrollWindow = Math.max(rect.height - window.innerHeight, 1)
-      const sectionStart = window.innerHeight * 0.28
-      const progress = Math.min(Math.max((sectionStart - rect.top) / scrollWindow, 0), 0.999)
-      setActiveStage(Math.floor(progress * STAGES.length))
+      stageRefs.current.forEach((el, index) => {
+        if (!el) return
+        const rect = el.getBoundingClientRect()
+        const center = rect.top + rect.height * 0.5
+        const distance = Math.abs(center - targetLine)
+        if (distance < closest) {
+          closest = distance
+          nextStage = index
+        }
+      })
+
+      setActiveStage(nextStage)
     }
 
     update()
@@ -250,66 +257,75 @@ function ScrollWorkflow() {
   }, [])
 
   const scrollToStage = (index: number) => {
-    const el = scrollerRef.current
-    if (!el) return
-
-    const rect = el.getBoundingClientRect()
-    const scrollWindow = Math.max(rect.height - window.innerHeight, 1)
-    const sectionStart = window.innerHeight * 0.28
-    const targetProgress = (index + 0.5) / STAGES.length
-    const targetTop = window.scrollY + rect.top + targetProgress * scrollWindow - sectionStart
-    window.scrollTo({ top: targetTop, behavior: 'smooth' })
+    stageRefs.current[index]?.scrollIntoView({ behavior: 'smooth', block: 'center' })
     setActiveStage(index)
   }
 
   return (
-    <div ref={scrollerRef} className="relative h-[480vh]">
-      <div className="sticky top-20 grid min-h-[calc(100vh-5rem)] items-center gap-10 lg:grid-cols-[0.9fr_1.1fr]">
-        <div>
-          <div className="mb-8 max-w-2xl">
-            <p className="font-mono text-[11px] font-bold uppercase tracking-[0.2em] text-emerald-300">
-              Stage {STAGES[activeStage].step}
-            </p>
-            <h3 className="mt-3 font-display text-3xl font-bold leading-tight tracking-tight text-white md:text-5xl">
-              {STAGES[activeStage].headline}
-            </h3>
-          </div>
+    <div className="grid items-start gap-10 lg:grid-cols-[0.92fr_1.08fr]">
+      <div className="overflow-hidden rounded-3xl border border-white/[0.08] bg-[#080a0f]">
+        {STAGES.map((stage, index) => {
+          const active = index === activeStage
+          return (
+            <article
+              key={stage.title}
+              ref={(el) => {
+                stageRefs.current[index] = el
+              }}
+              className={`border-b border-white/[0.08] transition-all duration-500 last:border-b-0 ${
+                active ? 'bg-white/[0.04]' : 'bg-transparent'
+              }`}
+            >
+              <button
+                type="button"
+                className="block w-full px-5 py-6 text-left"
+                onClick={() => scrollToStage(index)}
+              >
+                <div className="flex items-center gap-5">
+                  <span className={`font-mono text-xs ${active ? 'text-emerald-300' : 'text-zinc-600'}`}>
+                    {stage.step}
+                  </span>
+                  <span className={`font-display text-sm font-bold uppercase tracking-[0.12em] ${active ? 'text-white' : 'text-zinc-500'}`}>
+                    {stage.title}
+                  </span>
+                </div>
+              </button>
 
-          <div className="overflow-hidden rounded-3xl border border-white/[0.08] bg-[#080a0f]">
-            {STAGES.map((stage, index) => {
-              const active = index === activeStage
-              return (
-                <button
-                  key={stage.title}
-                  type="button"
-                  className={`block w-full border-b border-white/[0.08] px-5 py-5 text-left transition-all duration-500 last:border-b-0 ${
-                    active ? 'bg-white/[0.035]' : 'bg-transparent hover:bg-white/[0.02]'
-                  }`}
-                  onClick={() => scrollToStage(index)}
-                >
-                  <div className="flex items-center gap-5">
-                    <span className={`font-mono text-xs ${active ? 'text-emerald-300' : 'text-zinc-600'}`}>
-                      {stage.step}
-                    </span>
-                    <span className={`font-display text-sm font-bold uppercase tracking-[0.12em] ${active ? 'text-white' : 'text-zinc-500'}`}>
-                      {stage.title}
-                    </span>
-                  </div>
-                  <div className={`grid transition-all duration-500 ${active ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'}`}>
-                    <div className="overflow-hidden">
-                      <p className="mt-5 max-w-2xl text-sm leading-7 text-zinc-400">{stage.body}</p>
-                      <div className="mt-5 grid gap-2 sm:grid-cols-2">
-                        {stage.bullets.map((item) => (
-                          <div key={item} className="rounded-2xl border border-white/[0.06] bg-black/20 px-3 py-3">
-                            <p className="font-mono text-xs text-zinc-300">{item}</p>
-                          </div>
-                        ))}
+              <div className={`grid transition-all duration-700 ${active ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'}`}>
+                <div className="overflow-hidden px-5">
+                  <h3 className="max-w-2xl font-display text-3xl font-bold leading-tight tracking-tight text-white md:text-5xl">
+                    {stage.headline}
+                  </h3>
+                  <p className="mt-5 max-w-2xl text-sm leading-7 text-zinc-400">{stage.body}</p>
+                  <div className="grid gap-2 py-6 sm:grid-cols-2">
+                    {stage.bullets.map((item) => (
+                      <div key={item} className="rounded-2xl border border-white/[0.06] bg-black/20 px-3 py-3">
+                        <p className="font-mono text-xs text-zinc-300">{item}</p>
                       </div>
-                    </div>
+                    ))}
                   </div>
-                </button>
-              )
-            })}
+                </div>
+              </div>
+            </article>
+          )
+        })}
+      </div>
+
+      <div className="lg:sticky lg:top-24">
+        <div className="mb-5 flex items-center justify-between">
+          <p className="font-mono text-[11px] font-bold uppercase tracking-[0.2em] text-emerald-300">
+            Stage {STAGES[activeStage].step}
+          </p>
+          <div className="flex gap-1">
+            {STAGES.map((stage, index) => (
+              <button
+                key={stage.step}
+                type="button"
+                className={`h-1.5 rounded-full transition-all ${index === activeStage ? 'w-8 bg-emerald-300' : 'w-3 bg-white/15'}`}
+                aria-label={`Go to ${stage.title}`}
+                onClick={() => scrollToStage(index)}
+              />
+            ))}
           </div>
         </div>
 
