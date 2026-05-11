@@ -141,18 +141,7 @@ export default function LandingPage({ onEnterApp, onOpenDocs }: LandingPageProps
         </section>
 
         <section ref={flowRef} className="border-y border-white/[0.06] bg-white/[0.018]">
-          <div className="mx-auto max-w-[1440px] px-6 py-20 md:px-10">
-            <div className="mb-16 max-w-4xl">
-              <p className="font-mono text-[11px] font-bold uppercase tracking-[0.2em] text-indigo-300">Controlled workflow</p>
-              <h2 className="mt-3 font-display text-4xl font-bold tracking-tight text-white md:text-6xl">
-                Scroll through the path from agent proposal to audit evidence.
-              </h2>
-              <p className="mt-5 max-w-2xl text-sm leading-7 text-zinc-500">
-                Each stage adds a constraint, explanation, or record. The product is not a charting dashboard; it is an operating layer for financial actions.
-              </p>
-            </div>
-            <ScrollWorkflow />
-          </div>
+          <ScrollWorkflow />
         </section>
 
         <section ref={depthRef} className="border-y border-white/[0.06] bg-white/[0.025]">
@@ -224,27 +213,19 @@ export default function LandingPage({ onEnterApp, onOpenDocs }: LandingPageProps
 }
 
 function ScrollWorkflow() {
-  const stageRefs = useRef<Array<HTMLElement | null>>([])
+  const scrollerRef = useRef<HTMLDivElement | null>(null)
   const [activeStage, setActiveStage] = useState(0)
 
   useEffect(() => {
     const update = () => {
-      const targetLine = window.innerHeight * 0.52
-      let nextStage = 0
-      let closest = Number.POSITIVE_INFINITY
+      const el = scrollerRef.current
+      if (!el) return
 
-      stageRefs.current.forEach((el, index) => {
-        if (!el) return
-        const rect = el.getBoundingClientRect()
-        const center = rect.top + rect.height * 0.5
-        const distance = Math.abs(center - targetLine)
-        if (distance < closest) {
-          closest = distance
-          nextStage = index
-        }
-      })
-
-      setActiveStage(nextStage)
+      const rect = el.getBoundingClientRect()
+      const scrollRange = Math.max(rect.height - window.innerHeight, 1)
+      const pinStart = window.innerHeight * 0.16
+      const progress = Math.min(Math.max((pinStart - rect.top) / scrollRange, 0), 0.999)
+      setActiveStage(Math.floor(progress * STAGES.length))
     }
 
     update()
@@ -257,80 +238,101 @@ function ScrollWorkflow() {
   }, [])
 
   const scrollToStage = (index: number) => {
-    stageRefs.current[index]?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    const el = scrollerRef.current
+    if (!el) return
+
+    const rect = el.getBoundingClientRect()
+    const scrollRange = Math.max(rect.height - window.innerHeight, 1)
+    const pinStart = window.innerHeight * 0.16
+    const targetProgress = (index + 0.5) / STAGES.length
+    const targetTop = window.scrollY + rect.top + targetProgress * scrollRange - pinStart
+    window.scrollTo({ top: targetTop, behavior: 'smooth' })
     setActiveStage(index)
   }
 
   return (
-    <div className="grid items-start gap-10 lg:grid-cols-[0.92fr_1.08fr]">
-      <div className="overflow-hidden rounded-3xl border border-white/[0.08] bg-[#080a0f]">
-        {STAGES.map((stage, index) => {
-          const active = index === activeStage
-          return (
-            <article
-              key={stage.title}
-              ref={(el) => {
-                stageRefs.current[index] = el
-              }}
-              className={`border-b border-white/[0.08] transition-all duration-500 last:border-b-0 ${
-                active ? 'bg-white/[0.04]' : 'bg-transparent'
-              }`}
-            >
-              <button
-                type="button"
-                className="block w-full px-5 py-6 text-left"
-                onClick={() => scrollToStage(index)}
-              >
-                <div className="flex items-center gap-5">
-                  <span className={`font-mono text-xs ${active ? 'text-emerald-300' : 'text-zinc-600'}`}>
-                    {stage.step}
-                  </span>
-                  <span className={`font-display text-sm font-bold uppercase tracking-[0.12em] ${active ? 'text-white' : 'text-zinc-500'}`}>
-                    {stage.title}
-                  </span>
-                </div>
-              </button>
+    <div ref={scrollerRef} className="relative min-h-[520vh]">
+      <div className="sticky top-0 flex min-h-screen items-center">
+        <div className="mx-auto w-full max-w-[1440px] px-6 py-24 md:px-10">
+          <div className="mb-10 max-w-4xl">
+            <p className="font-mono text-[11px] font-bold uppercase tracking-[0.2em] text-indigo-300">Controlled workflow</p>
+            <h2 className="mt-3 font-display text-4xl font-bold tracking-tight text-white md:text-6xl">
+              Scroll through the path from agent proposal to audit evidence.
+            </h2>
+            <p className="mt-5 max-w-2xl text-sm leading-7 text-zinc-500">
+              Each stage adds a constraint, explanation, or record. The product is not a charting dashboard; it is an operating layer for financial actions.
+            </p>
+          </div>
 
-              <div className={`grid transition-all duration-700 ${active ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'}`}>
-                <div className="overflow-hidden px-5">
-                  <h3 className="max-w-2xl font-display text-3xl font-bold leading-tight tracking-tight text-white md:text-5xl">
-                    {stage.headline}
-                  </h3>
-                  <p className="mt-5 max-w-2xl text-sm leading-7 text-zinc-400">{stage.body}</p>
-                  <div className="grid gap-2 py-6 sm:grid-cols-2">
-                    {stage.bullets.map((item) => (
-                      <div key={item} className="rounded-2xl border border-white/[0.06] bg-black/20 px-3 py-3">
-                        <p className="font-mono text-xs text-zinc-300">{item}</p>
+          <div className="grid items-start gap-10 lg:grid-cols-[0.92fr_1.08fr]">
+            <div className="overflow-hidden rounded-3xl border border-white/[0.08] bg-[#080a0f]">
+              {STAGES.map((stage, index) => {
+                const active = index === activeStage
+                return (
+                  <article
+                    key={stage.title}
+                    className={`border-b border-white/[0.08] transition-all duration-500 last:border-b-0 ${
+                      active ? 'bg-white/[0.04]' : 'bg-transparent'
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      className="block w-full px-5 py-6 text-left"
+                      onClick={() => scrollToStage(index)}
+                    >
+                      <div className="flex items-center gap-5">
+                        <span className={`font-mono text-xs ${active ? 'text-emerald-300' : 'text-zinc-600'}`}>
+                          {stage.step}
+                        </span>
+                        <span className={`font-display text-sm font-bold uppercase tracking-[0.12em] ${active ? 'text-white' : 'text-zinc-500'}`}>
+                          {stage.title}
+                        </span>
                       </div>
-                    ))}
-                  </div>
+                    </button>
+
+                    <div className={`grid transition-all duration-700 ${active ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'}`}>
+                      <div className="overflow-hidden px-5">
+                        <h3 className="max-w-2xl font-display text-3xl font-bold leading-tight tracking-tight text-white md:text-5xl">
+                          {stage.headline}
+                        </h3>
+                        <p className="mt-5 max-w-2xl text-sm leading-7 text-zinc-400">{stage.body}</p>
+                        <div className="grid gap-2 py-6 sm:grid-cols-2">
+                          {stage.bullets.map((item) => (
+                            <div key={item} className="rounded-2xl border border-white/[0.06] bg-black/20 px-3 py-3">
+                              <p className="font-mono text-xs text-zinc-300">{item}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  </article>
+                )
+              })}
+            </div>
+
+            <div>
+              <div className="mb-5 flex items-center justify-between">
+                <p className="font-mono text-[11px] font-bold uppercase tracking-[0.2em] text-emerald-300">
+                  Stage {STAGES[activeStage].step}
+                </p>
+                <div className="flex gap-1">
+                  {STAGES.map((stage, index) => (
+                    <button
+                      key={stage.step}
+                      type="button"
+                      className={`h-1.5 rounded-full transition-all ${index === activeStage ? 'w-8 bg-emerald-300' : 'w-3 bg-white/15'}`}
+                      aria-label={`Go to ${stage.title}`}
+                      onClick={() => scrollToStage(index)}
+                    />
+                  ))}
                 </div>
               </div>
-            </article>
-          )
-        })}
-      </div>
 
-      <div className="lg:sticky lg:top-24">
-        <div className="mb-5 flex items-center justify-between">
-          <p className="font-mono text-[11px] font-bold uppercase tracking-[0.2em] text-emerald-300">
-            Stage {STAGES[activeStage].step}
-          </p>
-          <div className="flex gap-1">
-            {STAGES.map((stage, index) => (
-              <button
-                key={stage.step}
-                type="button"
-                className={`h-1.5 rounded-full transition-all ${index === activeStage ? 'w-8 bg-emerald-300' : 'w-3 bg-white/15'}`}
-                aria-label={`Go to ${stage.title}`}
-                onClick={() => scrollToStage(index)}
-              />
-            ))}
+              <div key={activeStage} className="animate-fade-in-up transition-all duration-500">
+                <StageVisual index={activeStage} />
+              </div>
+            </div>
           </div>
-        </div>
-
-        <div key={activeStage} className="animate-fade-in-up transition-all duration-500">
-          <StageVisual index={activeStage} />
         </div>
       </div>
     </div>
