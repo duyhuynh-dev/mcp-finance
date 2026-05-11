@@ -55,6 +55,21 @@ const STAGES = [
 
 export default function LandingPage({ onEnterApp, onOpenDocs }: LandingPageProps) {
   const flowRef = useRef<HTMLElement | null>(null)
+  const depthRef = useRef<HTMLElement | null>(null)
+
+  useEffect(() => {
+    const target = window.location.hash === '#depth' ? depthRef.current : window.location.hash === '#flow' ? flowRef.current : null
+    if (!target) return
+    window.requestAnimationFrame(() => {
+      target.scrollIntoView({ block: 'start' })
+    })
+  }, [])
+
+  const scrollToSection = (section: HTMLElement | null, hash: string) => {
+    if (!section) return
+    window.history.replaceState({}, '', hash)
+    section.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
 
   return (
     <div className="min-h-screen overflow-hidden bg-[#050609] text-zinc-100">
@@ -71,10 +86,12 @@ export default function LandingPage({ onEnterApp, onOpenDocs }: LandingPageProps
             </div>
           </div>
           <nav className="hidden items-center gap-7 text-xs font-semibold text-zinc-500 md:flex">
-            <button type="button" className="transition-colors hover:text-zinc-200" onClick={() => flowRef.current?.scrollIntoView({ behavior: 'smooth' })}>
+            <button type="button" className="transition-colors hover:text-zinc-200" onClick={() => scrollToSection(flowRef.current, '#flow')}>
               Flow
             </button>
-            <a className="transition-colors hover:text-zinc-200" href="#depth">Depth</a>
+            <button type="button" className="transition-colors hover:text-zinc-200" onClick={() => scrollToSection(depthRef.current, '#depth')}>
+              Depth
+            </button>
             <button type="button" className="transition-colors hover:text-zinc-200" onClick={onOpenDocs}>Docs</button>
             <button type="button" className="rounded-full bg-emerald-400 px-4 py-2 font-bold text-zinc-950 transition-transform hover:-translate-y-0.5" onClick={onEnterApp}>
               Open app
@@ -105,7 +122,7 @@ export default function LandingPage({ onEnterApp, onOpenDocs }: LandingPageProps
                 <button type="button" className="rounded-full bg-white px-5 py-3 text-sm font-bold text-zinc-950 transition-transform hover:-translate-y-0.5" onClick={onEnterApp}>
                   Open Control Plane
                 </button>
-                <button type="button" className="rounded-full border border-white/12 bg-white/[0.04] px-5 py-3 text-sm font-bold text-zinc-200 transition-colors hover:border-emerald-400/30 hover:text-white" onClick={() => flowRef.current?.scrollIntoView({ behavior: 'smooth' })}>
+                <button type="button" className="rounded-full border border-white/12 bg-white/[0.04] px-5 py-3 text-sm font-bold text-zinc-200 transition-colors hover:border-emerald-400/30 hover:text-white" onClick={() => scrollToSection(flowRef.current, '#flow')}>
                   View Demo Flow
                 </button>
               </div>
@@ -124,7 +141,7 @@ export default function LandingPage({ onEnterApp, onOpenDocs }: LandingPageProps
           </div>
         </section>
 
-        <section ref={flowRef} className="border-y border-white/[0.06] bg-white/[0.018]">
+        <section ref={flowRef} id="flow" className="border-y border-white/[0.06] bg-white/[0.018]">
           <div className="mx-auto max-w-[1440px] px-6 py-20 md:px-10">
             <div className="mb-16 max-w-4xl">
               <p className="font-mono text-[11px] font-bold uppercase tracking-[0.2em] text-indigo-300">Controlled workflow</p>
@@ -139,7 +156,7 @@ export default function LandingPage({ onEnterApp, onOpenDocs }: LandingPageProps
           </div>
         </section>
 
-        <section id="depth" className="border-y border-white/[0.06] bg-white/[0.025]">
+        <section ref={depthRef} id="depth" className="border-y border-white/[0.06] bg-white/[0.025]">
           <div className="mx-auto grid max-w-[1440px] gap-12 px-6 py-20 md:px-10 xl:grid-cols-[0.8fr_1.2fr]">
             <div>
               <p className="font-mono text-[11px] font-bold uppercase tracking-[0.2em] text-emerald-300">Technical depth</p>
@@ -208,27 +225,19 @@ export default function LandingPage({ onEnterApp, onOpenDocs }: LandingPageProps
 }
 
 function ScrollWorkflow() {
-  const stageRefs = useRef<Array<HTMLDivElement | null>>([])
+  const scrollerRef = useRef<HTMLDivElement | null>(null)
   const [activeStage, setActiveStage] = useState(0)
 
   useEffect(() => {
     const update = () => {
-      const viewportTarget = window.innerHeight * 0.5
-      let nextStage = 0
-      let closestDistance = Number.POSITIVE_INFINITY
+      const el = scrollerRef.current
+      if (!el) return
 
-      stageRefs.current.forEach((el, index) => {
-        if (!el) return
-        const rect = el.getBoundingClientRect()
-        const stageCenter = rect.top + rect.height * 0.5
-        const distance = Math.abs(stageCenter - viewportTarget)
-        if (distance < closestDistance) {
-          closestDistance = distance
-          nextStage = index
-        }
-      })
-
-      setActiveStage(nextStage)
+      const rect = el.getBoundingClientRect()
+      const scrollWindow = Math.max(rect.height - window.innerHeight, 1)
+      const sectionStart = window.innerHeight * 0.28
+      const progress = Math.min(Math.max((sectionStart - rect.top) / scrollWindow, 0), 0.999)
+      setActiveStage(Math.floor(progress * STAGES.length))
     }
 
     update()
@@ -240,9 +249,22 @@ function ScrollWorkflow() {
     }
   }, [])
 
+  const scrollToStage = (index: number) => {
+    const el = scrollerRef.current
+    if (!el) return
+
+    const rect = el.getBoundingClientRect()
+    const scrollWindow = Math.max(rect.height - window.innerHeight, 1)
+    const sectionStart = window.innerHeight * 0.28
+    const targetProgress = (index + 0.5) / STAGES.length
+    const targetTop = window.scrollY + rect.top + targetProgress * scrollWindow - sectionStart
+    window.scrollTo({ top: targetTop, behavior: 'smooth' })
+    setActiveStage(index)
+  }
+
   return (
-    <div className="relative">
-      <div className="sticky top-20 z-10 grid min-h-[calc(100vh-5rem)] items-center gap-10 lg:grid-cols-[0.9fr_1.1fr]">
+    <div ref={scrollerRef} className="relative h-[480vh]">
+      <div className="sticky top-20 grid min-h-[calc(100vh-5rem)] items-center gap-10 lg:grid-cols-[0.9fr_1.1fr]">
         <div>
           <div className="mb-8 max-w-2xl">
             <p className="font-mono text-[11px] font-bold uppercase tracking-[0.2em] text-emerald-300">
@@ -263,10 +285,7 @@ function ScrollWorkflow() {
                   className={`block w-full border-b border-white/[0.08] px-5 py-5 text-left transition-all duration-500 last:border-b-0 ${
                     active ? 'bg-white/[0.035]' : 'bg-transparent hover:bg-white/[0.02]'
                   }`}
-                  onClick={() => {
-                    stageRefs.current[index]?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-                    setActiveStage(index)
-                  }}
+                  onClick={() => scrollToStage(index)}
                 >
                   <div className="flex items-center gap-5">
                     <span className={`font-mono text-xs ${active ? 'text-emerald-300' : 'text-zinc-600'}`}>
@@ -297,19 +316,6 @@ function ScrollWorkflow() {
         <div key={activeStage} className="animate-fade-in-up transition-all duration-500">
           <StageVisual index={activeStage} />
         </div>
-      </div>
-
-      <div className="-mt-[calc(100vh-5rem)]">
-        {STAGES.map((stage, index) => (
-          <div
-            key={stage.title}
-            ref={(el) => {
-              stageRefs.current[index] = el
-            }}
-            className="h-screen"
-            aria-hidden="true"
-          />
-        ))}
       </div>
     </div>
   )
