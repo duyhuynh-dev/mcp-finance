@@ -36,6 +36,7 @@ import OrderIntentsPanel from './components/OrderIntentsPanel'
 import TradeDecisionPanel from './components/TradeDecisionPanel'
 import VenuePanel from './components/VenuePanel'
 import LandingPage from './components/LandingPage'
+import MethodologyPage from './components/MethodologyPage'
 
 const SYMBOLS = ['AAPL', 'MSFT', 'GOOGL', 'SPY', 'NVDA', 'AMZN', 'META', 'TSLA', 'QQQ', 'AMD']
 
@@ -65,8 +66,12 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
+  if (path === '/methodology') {
+    return <MethodologyPage onBack={() => navigate('/')} onEnterApp={() => navigate('/app')} />
+  }
+
   if (path !== '/app') {
-    return <LandingPage onEnterApp={() => navigate('/app')} />
+    return <LandingPage onEnterApp={() => navigate('/app')} onOpenDocs={() => navigate('/methodology')} />
   }
 
   return <ControlPlane />

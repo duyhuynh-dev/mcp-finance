@@ -3,15 +3,8 @@ import * as THREE from 'three'
 
 type LandingPageProps = {
   onEnterApp: () => void
+  onOpenDocs: () => void
 }
-
-const FLOW = [
-  ['01', 'Agent proposes', 'Identity, budget, symbol scope, and MCP tool permissions travel with every action.'],
-  ['02', 'Risk explains', 'Policy, cash, exposure, concentration, VaR, CVaR, and position checks produce a decision.'],
-  ['03', 'Human approves', 'High-risk actions wait for review before execution is permitted.'],
-  ['04', 'Venue simulates', 'Orders account for spread, depth, impact, latency, partial fills, and lifecycle status.'],
-  ['05', 'Audit replays', 'The event log preserves every step from proposal to final portfolio state.'],
-]
 
 const DEPTH = [
   ['Policy layer', 'Active state, budget, allowed symbols, maximum order size, and MCP tool scope.'],
@@ -22,7 +15,45 @@ const DEPTH = [
   ['MCP-native', 'Designed for agents to propose actions through controlled tool boundaries.'],
 ]
 
-export default function LandingPage({ onEnterApp }: LandingPageProps) {
+const STAGES = [
+  {
+    step: '01',
+    title: 'Agent proposal',
+    headline: 'Every action starts with a constrained identity.',
+    body: 'An agent does not get a vague permission to trade. The request carries its budget, symbol scope, maximum order size, and MCP tool permissions into the control plane.',
+    bullets: ['Agent: alpha-1', 'Request: BUY 25 AAPL', 'Scope: AAPL, MSFT, SPY', 'Tool: place_order'],
+  },
+  {
+    step: '02',
+    title: 'Risk decision',
+    headline: 'The system explains the trade before it can execute.',
+    body: 'The decision engine checks policy, cash, position impact, gross exposure, concentration, and VaR/CVaR budget. The result is not a boolean; it is an explained decision.',
+    bullets: ['Decision: REQUIRE_APPROVAL', 'Exposure: 0.42x', 'Concentration: review', 'VaR/CVaR: inside limits'],
+  },
+  {
+    step: '03',
+    title: 'Human review',
+    headline: 'High-risk actions pause for approval.',
+    body: 'When policy requires review, the trade becomes an approval item. Approving it runs the final pre-trade checks again, so stale approvals cannot bypass current risk.',
+    bullets: ['Queue: pending', 'Action: approve or reject', 'Final check: required', 'Audit: decision recorded'],
+  },
+  {
+    step: '04',
+    title: 'Execution simulation',
+    headline: 'Orders face a local market, not a fake instant fill.',
+    body: 'The simulated venue models spread, depth, impact, latency, partial fills, cancellation, and order status. It gives agents realistic execution friction without touching live capital.',
+    bullets: ['Status: accepted', 'Depth: constrained', 'Fill: partial or complete', 'Ledger: mirrored'],
+  },
+  {
+    step: '05',
+    title: 'Audit replay',
+    headline: 'The evidence remains inspectable after the action.',
+    body: 'The event log records the proposal, risk explanation, human decision, execution result, and portfolio change. A reviewer can replay the path and test counterfactual policies later.',
+    bullets: ['Proposal recorded', 'Risk attached', 'Decision linked', 'Portfolio updated'],
+  },
+]
+
+export default function LandingPage({ onEnterApp, onOpenDocs }: LandingPageProps) {
   const flowRef = useRef<HTMLElement | null>(null)
 
   return (
@@ -44,11 +75,12 @@ export default function LandingPage({ onEnterApp }: LandingPageProps) {
               Flow
             </button>
             <a className="transition-colors hover:text-zinc-200" href="#depth">Depth</a>
-            <button type="button" className="rounded-full border border-white/10 px-4 py-2 text-zinc-200 transition-colors hover:border-emerald-400/30 hover:text-white" onClick={onEnterApp}>
+            <button type="button" className="transition-colors hover:text-zinc-200" onClick={onOpenDocs}>Docs</button>
+            <button type="button" className="rounded-full bg-emerald-400 px-4 py-2 font-bold text-zinc-950 transition-transform hover:-translate-y-0.5" onClick={onEnterApp}>
               Open app
             </button>
           </nav>
-          <button type="button" className="rounded-full border border-white/10 px-4 py-2 text-xs font-semibold text-zinc-200 md:hidden" onClick={onEnterApp}>
+          <button type="button" className="rounded-full bg-emerald-400 px-4 py-2 text-xs font-bold text-zinc-950 md:hidden" onClick={onEnterApp}>
             Open
           </button>
         </div>
@@ -92,26 +124,22 @@ export default function LandingPage({ onEnterApp }: LandingPageProps) {
           </div>
         </section>
 
-        <section ref={flowRef} className="mx-auto max-w-[1440px] px-6 py-20 md:px-10">
-          <div className="mb-10 flex flex-wrap items-end justify-between gap-5">
-            <div>
-              <p className="font-mono text-[11px] font-bold uppercase tracking-[0.2em] text-indigo-300">Demo path</p>
-              <h2 className="mt-3 max-w-3xl font-display text-3xl font-bold tracking-tight text-white md:text-5xl">
-                One controlled workflow from agent proposal to audit evidence.
+        <section ref={flowRef} className="border-y border-white/[0.06] bg-white/[0.018]">
+          <div className="mx-auto max-w-[1440px] px-6 py-20 md:px-10">
+            <div className="mb-16 max-w-4xl">
+              <p className="font-mono text-[11px] font-bold uppercase tracking-[0.2em] text-indigo-300">Controlled workflow</p>
+              <h2 className="mt-3 font-display text-4xl font-bold tracking-tight text-white md:text-6xl">
+                Scroll through the path from agent proposal to audit evidence.
               </h2>
+              <p className="mt-5 max-w-2xl text-sm leading-7 text-zinc-500">
+                Each stage adds a constraint, explanation, or record. The product is not a charting dashboard; it is an operating layer for financial actions.
+              </p>
             </div>
-            <p className="max-w-md text-sm leading-6 text-zinc-500">
-              The landing page stays sparse because the product is serious: it shows the workflow, then lets the app prove the details.
-            </p>
-          </div>
-          <div className="grid gap-px overflow-hidden rounded-2xl border border-white/[0.08] bg-white/[0.08] lg:grid-cols-5">
-            {FLOW.map(([step, title, body]) => (
-              <article key={title} className="min-h-56 bg-[#080a0f] p-5">
-                <p className="font-mono text-xs text-zinc-600">{step}</p>
-                <h3 className="mt-8 font-display text-xl font-bold text-white">{title}</h3>
-                <p className="mt-3 text-sm leading-6 text-zinc-500">{body}</p>
-              </article>
-            ))}
+            <div className="space-y-16">
+              {STAGES.map((stage, index) => (
+                <StagePanel key={stage.title} stage={stage} index={index} />
+              ))}
+            </div>
           </div>
         </section>
 
@@ -137,18 +165,220 @@ export default function LandingPage({ onEnterApp }: LandingPageProps) {
           </div>
         </section>
 
-        <section className="mx-auto flex max-w-[1440px] flex-wrap items-center justify-between gap-6 px-6 py-16 md:px-10">
-          <div>
-            <p className="font-mono text-[11px] font-bold uppercase tracking-[0.2em] text-zinc-600">Ready locally</p>
-            <h2 className="mt-3 font-display text-3xl font-bold tracking-tight text-white">
-              Open the control plane and run the workflow.
-            </h2>
+        <section className="mx-auto max-w-[1440px] px-6 py-16 md:px-10">
+          <div className="grid gap-4 rounded-3xl border border-white/[0.08] bg-[#080a0f] p-5 md:grid-cols-4">
+            <FooterMetric label="Default mode" value="Local simulation" />
+            <FooterMetric label="Human review" value="Approval queue" />
+            <FooterMetric label="Evidence" value="Audit replay" />
+            <FooterMetric label="Deployment" value="Single container" />
           </div>
-          <button type="button" className="rounded-full bg-emerald-400 px-6 py-3 text-sm font-bold text-zinc-950 transition-transform hover:-translate-y-0.5" onClick={onEnterApp}>
-            Launch App
-          </button>
+        </section>
+
+        <section id="documentation" className="mx-auto grid max-w-[1440px] gap-10 px-6 py-20 md:px-10 xl:grid-cols-[0.85fr_1.15fr]">
+          <div>
+            <p className="font-mono text-[11px] font-bold uppercase tracking-[0.2em] text-indigo-300">Scientific documentation</p>
+            <h2 className="mt-3 font-display text-3xl font-bold tracking-tight text-white md:text-5xl">
+              Explain the method, not just the interface.
+            </h2>
+            <p className="mt-5 max-w-lg text-sm leading-7 text-zinc-500">
+              Because the product is technical, the documentation should read like a short methodology paper: assumptions, controls, risk model, execution model, audit model, and limits.
+            </p>
+          </div>
+          <div className="grid gap-3 md:grid-cols-2">
+            <DocCard title="Governance model" body="How agent identity, allowed tools, budgets, and symbol scopes constrain every proposed action." />
+            <DocCard title="Risk methodology" body="How the system estimates notional exposure, concentration, cash checks, VaR/CVaR status, and approval thresholds." />
+            <DocCard title="Execution model" body="How the local venue simulates spread, impact, depth, latency, partial fills, and cancellation." />
+            <DocCard title="Audit and replay" body="How decisions, approvals, fills, and portfolio changes become reviewable evidence." />
+          </div>
+          <div className="xl:col-start-2">
+            <button type="button" className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-5 py-3 text-sm font-bold text-emerald-300 transition-colors hover:bg-emerald-400/15" onClick={onOpenDocs}>
+              Read methodology
+            </button>
+          </div>
         </section>
       </main>
+
+      <footer className="border-t border-white/[0.06]">
+        <div className="mx-auto flex max-w-[1440px] flex-wrap items-center justify-between gap-4 px-6 py-8 text-xs text-zinc-600 md:px-10">
+          <p>© 2026 Duy Huynh. All rights reserved.</p>
+          <div className="flex gap-5">
+            <button type="button" className="transition-colors hover:text-zinc-300" onClick={onOpenDocs}>Scientific documentation</button>
+            <a className="transition-colors hover:text-zinc-300" href="mailto:privacy@duyhuynh.dev">Privacy</a>
+          </div>
+        </div>
+      </footer>
+    </div>
+  )
+}
+
+function StagePanel({
+  stage,
+  index,
+}: {
+  stage: (typeof STAGES)[number]
+  index: number
+}) {
+  return (
+    <article className="grid min-h-[78vh] items-center gap-10 rounded-[2rem] border border-white/[0.08] bg-[#080a0f] p-6 lg:grid-cols-[0.82fr_1.18fr] lg:p-8">
+      <div>
+        <p className="font-mono text-[11px] font-bold uppercase tracking-[0.2em] text-zinc-600">
+          Stage {stage.step}
+        </p>
+        <h3 className="mt-4 max-w-xl font-display text-3xl font-bold leading-tight tracking-tight text-white md:text-5xl">
+          {stage.headline}
+        </h3>
+        <p className="mt-5 max-w-lg text-sm leading-7 text-zinc-500">{stage.body}</p>
+        <div className="mt-8 grid gap-2 sm:grid-cols-2">
+          {stage.bullets.map((item) => (
+            <div key={item} className="rounded-2xl border border-white/[0.06] bg-white/[0.025] px-3 py-3">
+              <p className="font-mono text-xs text-zinc-300">{item}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+      <StageVisual index={index} />
+    </article>
+  )
+}
+
+function StageVisual({ index }: { index: number }) {
+  const panels = [
+    <div className="space-y-3" key="proposal">
+      <VisualHeader label="Proposal envelope" status="scoped" />
+      <VisualRow label="Agent" value="alpha-1" tone="indigo" />
+      <VisualRow label="Tool" value="place_order" tone="emerald" />
+      <VisualRow label="Budget" value="$50,000" tone="zinc" />
+      <VisualRow label="Allowed symbols" value="AAPL · MSFT · SPY" tone="zinc" />
+      <FlowLine labels={['request', 'identity', 'policy']} />
+    </div>,
+    <div className="space-y-3" key="risk">
+      <VisualHeader label="Decision engine" status="require approval" tone="amber" />
+      <DecisionCheck label="Agent permissions" tone="emerald" value="passed" />
+      <DecisionCheck label="Cash and position" tone="emerald" value="passed" />
+      <DecisionCheck label="Gross exposure" tone="emerald" value="0.42x" />
+      <DecisionCheck label="Concentration" tone="amber" value="review" />
+      <DecisionCheck label="VaR / CVaR budget" tone="emerald" value="inside limits" />
+      <DecisionCheck label="Approval policy" tone="amber" value="required" />
+    </div>,
+    <div className="space-y-4" key="approval">
+      <VisualHeader label="Approval queue" status="pending" tone="amber" />
+      <div className="rounded-2xl border border-amber-300/20 bg-amber-300/[0.04] p-4">
+        <p className="font-display text-xl font-bold text-white">BUY 25 AAPL</p>
+        <p className="mt-2 text-xs leading-5 text-zinc-500">Reason: concentration review required before execution.</p>
+        <div className="mt-5 flex gap-2">
+          <span className="rounded-full bg-emerald-400 px-4 py-2 text-xs font-bold text-zinc-950">Approve</span>
+          <span className="rounded-full border border-rose-400/30 px-4 py-2 text-xs font-bold text-rose-300">Reject</span>
+        </div>
+      </div>
+      <FlowLine labels={['review', 'recheck', 'record']} />
+    </div>,
+    <div className="space-y-3" key="venue">
+      <VisualHeader label="Execution venue" status="simulated" />
+      <VenueStep label="Accepted" active />
+      <VenueStep label="Open" active />
+      <VenueStep label="Partial fill" active />
+      <VenueStep label="Filled" />
+      <div className="grid grid-cols-3 gap-2 pt-2">
+        <VisualStat label="Spread" value="2.4 bps" />
+        <VisualStat label="Impact" value="4.1 bps" />
+        <VisualStat label="Latency" value="2 ticks" />
+      </div>
+    </div>,
+    <div className="space-y-3" key="audit">
+      <VisualHeader label="Audit replay" status="valid" />
+      {['proposal recorded', 'risk explanation attached', 'approval decision linked', 'venue fill mirrored', 'portfolio state updated'].map((item) => (
+        <div key={item} className="flex items-center gap-3 rounded-2xl border border-white/[0.06] bg-white/[0.025] px-3 py-3 text-xs text-zinc-400">
+          <span className="h-px w-8 bg-emerald-300/50" />
+          {item}
+        </div>
+      ))}
+    </div>
+  ]
+
+  return (
+    <div className="relative overflow-hidden rounded-3xl border border-white/[0.08] bg-black/20 p-5">
+      <div className="absolute inset-0 opacity-40 [background-image:linear-gradient(rgba(255,255,255,0.035)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.035)_1px,transparent_1px)] [background-size:42px_42px]" />
+      <div className="relative">{panels[index]}</div>
+    </div>
+  )
+}
+
+function VisualHeader({ label, status, tone = 'emerald' }: { label: string; status: string; tone?: 'emerald' | 'amber' }) {
+  return (
+    <div className="mb-4 flex items-center justify-between">
+      <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-zinc-600">{label}</p>
+      <span className={`rounded-full px-3 py-1 font-mono text-[10px] font-bold ${tone === 'amber' ? 'bg-amber-400/10 text-amber-300' : 'bg-emerald-400/10 text-emerald-300'}`}>
+        {status}
+      </span>
+    </div>
+  )
+}
+
+function VisualRow({ label, value, tone }: { label: string; value: string; tone: 'emerald' | 'indigo' | 'zinc' }) {
+  const color = tone === 'emerald' ? 'text-emerald-300' : tone === 'indigo' ? 'text-indigo-300' : 'text-zinc-300'
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-2xl border border-white/[0.06] bg-white/[0.025] px-4 py-3">
+      <span className="text-xs text-zinc-500">{label}</span>
+      <span className={`font-mono text-xs font-semibold ${color}`}>{value}</span>
+    </div>
+  )
+}
+
+function FlowLine({ labels }: { labels: string[] }) {
+  return (
+    <div className="grid grid-cols-3 gap-2 pt-4">
+      {labels.map((label) => (
+        <div key={label} className="rounded-full border border-emerald-300/20 bg-emerald-300/[0.04] px-3 py-2 text-center font-mono text-[10px] uppercase tracking-[0.14em] text-emerald-300">
+          {label}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function VenueStep({ label, active }: { label: string; active?: boolean }) {
+  return (
+    <div className="flex items-center gap-3 rounded-2xl border border-white/[0.06] bg-white/[0.025] px-4 py-3">
+      <span className={`h-2.5 w-2.5 rounded-full ${active ? 'bg-emerald-300' : 'bg-zinc-700'}`} />
+      <span className="text-sm font-semibold text-zinc-300">{label}</span>
+    </div>
+  )
+}
+
+function VisualStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-2xl border border-white/[0.06] bg-white/[0.025] px-3 py-3">
+      <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-zinc-600">{label}</p>
+      <p className="mt-1 font-mono text-xs text-zinc-200">{value}</p>
+    </div>
+  )
+}
+
+function DocCard({ title, body }: { title: string; body: string }) {
+  return (
+    <article className="rounded-2xl border border-white/[0.08] bg-[#080a0f] p-5">
+      <h3 className="font-display text-base font-bold text-white">{title}</h3>
+      <p className="mt-3 text-sm leading-6 text-zinc-500">{body}</p>
+    </article>
+  )
+}
+
+function DecisionCheck({ label, value, tone }: { label: string; value: string; tone: 'emerald' | 'amber' }) {
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-xl border border-white/[0.06] bg-white/[0.025] px-3 py-2">
+      <span className="text-xs text-zinc-500">{label}</span>
+      <span className={`font-mono text-[11px] font-semibold ${tone === 'emerald' ? 'text-emerald-300' : 'text-amber-300'}`}>
+        {value}
+      </span>
+    </div>
+  )
+}
+
+function FooterMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="border-l border-white/10 pl-4">
+      <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-zinc-600">{label}</p>
+      <p className="mt-2 font-display text-lg font-bold text-white">{value}</p>
     </div>
   )
 }
