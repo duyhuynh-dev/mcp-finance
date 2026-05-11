@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
 
 type LandingPageProps = {
@@ -135,11 +135,7 @@ export default function LandingPage({ onEnterApp, onOpenDocs }: LandingPageProps
                 Each stage adds a constraint, explanation, or record. The product is not a charting dashboard; it is an operating layer for financial actions.
               </p>
             </div>
-            <div className="space-y-16">
-              {STAGES.map((stage, index) => (
-                <StagePanel key={stage.title} stage={stage} index={index} />
-              ))}
-            </div>
+            <ScrollWorkflow />
           </div>
         </section>
 
@@ -211,33 +207,85 @@ export default function LandingPage({ onEnterApp, onOpenDocs }: LandingPageProps
   )
 }
 
-function StagePanel({
-  stage,
-  index,
-}: {
-  stage: (typeof STAGES)[number]
-  index: number
-}) {
+function ScrollWorkflow() {
+  const scrollerRef = useRef<HTMLDivElement | null>(null)
+  const [activeStage, setActiveStage] = useState(0)
+
+  useEffect(() => {
+    const update = () => {
+      const el = scrollerRef.current
+      if (!el) return
+      const rect = el.getBoundingClientRect()
+      const scrollable = Math.max(rect.height - window.innerHeight, 1)
+      const progress = Math.min(Math.max(-rect.top / scrollable, 0), 0.999)
+      setActiveStage(Math.floor(progress * STAGES.length))
+    }
+
+    update()
+    window.addEventListener('scroll', update, { passive: true })
+    window.addEventListener('resize', update)
+    return () => {
+      window.removeEventListener('scroll', update)
+      window.removeEventListener('resize', update)
+    }
+  }, [])
+
   return (
-    <article className="grid min-h-[78vh] items-center gap-10 rounded-[2rem] border border-white/[0.08] bg-[#080a0f] p-6 lg:grid-cols-[0.82fr_1.18fr] lg:p-8">
-      <div>
-        <p className="font-mono text-[11px] font-bold uppercase tracking-[0.2em] text-zinc-600">
-          Stage {stage.step}
-        </p>
-        <h3 className="mt-4 max-w-xl font-display text-3xl font-bold leading-tight tracking-tight text-white md:text-5xl">
-          {stage.headline}
-        </h3>
-        <p className="mt-5 max-w-lg text-sm leading-7 text-zinc-500">{stage.body}</p>
-        <div className="mt-8 grid gap-2 sm:grid-cols-2">
-          {stage.bullets.map((item) => (
-            <div key={item} className="rounded-2xl border border-white/[0.06] bg-white/[0.025] px-3 py-3">
-              <p className="font-mono text-xs text-zinc-300">{item}</p>
-            </div>
-          ))}
+    <div ref={scrollerRef} className="relative min-h-[520vh]">
+      <div className="sticky top-20 grid min-h-[calc(100vh-5rem)] items-center gap-10 lg:grid-cols-[0.9fr_1.1fr]">
+        <div>
+          <div className="mb-8 max-w-2xl">
+            <p className="font-mono text-[11px] font-bold uppercase tracking-[0.2em] text-emerald-300">
+              Stage {STAGES[activeStage].step}
+            </p>
+            <h3 className="mt-3 font-display text-3xl font-bold leading-tight tracking-tight text-white md:text-5xl">
+              {STAGES[activeStage].headline}
+            </h3>
+          </div>
+
+          <div className="overflow-hidden rounded-3xl border border-white/[0.08] bg-[#080a0f]">
+            {STAGES.map((stage, index) => {
+              const active = index === activeStage
+              return (
+                <button
+                  key={stage.title}
+                  type="button"
+                  className={`block w-full border-b border-white/[0.08] px-5 py-5 text-left transition-all duration-500 last:border-b-0 ${
+                    active ? 'bg-white/[0.035]' : 'bg-transparent hover:bg-white/[0.02]'
+                  }`}
+                  onClick={() => setActiveStage(index)}
+                >
+                  <div className="flex items-center gap-5">
+                    <span className={`font-mono text-xs ${active ? 'text-emerald-300' : 'text-zinc-600'}`}>
+                      {stage.step}
+                    </span>
+                    <span className={`font-display text-sm font-bold uppercase tracking-[0.12em] ${active ? 'text-white' : 'text-zinc-500'}`}>
+                      {stage.title}
+                    </span>
+                  </div>
+                  <div className={`grid transition-all duration-500 ${active ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'}`}>
+                    <div className="overflow-hidden">
+                      <p className="mt-5 max-w-2xl text-sm leading-7 text-zinc-400">{stage.body}</p>
+                      <div className="mt-5 grid gap-2 sm:grid-cols-2">
+                        {stage.bullets.map((item) => (
+                          <div key={item} className="rounded-2xl border border-white/[0.06] bg-black/20 px-3 py-3">
+                            <p className="font-mono text-xs text-zinc-300">{item}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+
+        <div key={activeStage} className="animate-fade-in-up transition-all duration-500">
+          <StageVisual index={activeStage} />
         </div>
       </div>
-      <StageVisual index={index} />
-    </article>
+    </div>
   )
 }
 
