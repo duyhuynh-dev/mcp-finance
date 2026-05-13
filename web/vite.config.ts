@@ -4,6 +4,9 @@ import { defineConfig } from 'vite'
 
 export default defineConfig({
   plugins: [tailwindcss(), react()],
+  build: {
+    chunkSizeWarningLimit: 600,
+  },
   server: {
     // Explicit bind avoids some IPv6 localhost (::1) vs IPv4 issues.
     host: '127.0.0.1',
